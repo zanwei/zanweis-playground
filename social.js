@@ -425,6 +425,7 @@ const Social = (() => {
   // Bottom input bar.
   let barEl = null;
   let barInput = null;
+  let barSend = null;
   let barOpen = false;
 
   function ensureBar() {
@@ -441,28 +442,33 @@ const Social = (() => {
           </svg>
         </button>
       </div>
-      <button class="bullet-toggle" id="bullet-toggle" role="switch" aria-checked="true" title="Show bullet chat">
-        <span class="bullet-toggle-label">Bullet chat</span>
-        <span class="switch" aria-hidden="true"><span class="knob"></span></span>
+      <button class="bullet-mode" id="bullet-toggle" type="button" aria-label="Bullet chat"
+        aria-pressed="true" title="Hide bullet chat">
+        <span class="bullet-mode-label">Bullet chat</span>
+        <span class="bullet-flow" aria-hidden="true">
+          <span class="bullet-flow-path" data-bullet-path></span>
+          <span class="bullet-flow-path" data-bullet-path></span>
+          <span class="bullet-flow-path" data-bullet-path></span>
+        </span>
       </button>`;
     barInput = barEl.querySelector('input');
-    const sendBtn = barEl.querySelector('.chat-send');
+    barSend = barEl.querySelector('.chat-send');
     document.body.appendChild(barEl);
-    wireToggle(barEl.querySelector('#bullet-toggle'));
+    wireBulletButton(barEl.querySelector('#bullet-toggle'));
 
     const doSend = () => {
       const text = barInput.value.trim();
       if (!text) return;
       presence?.say(text);
       spawnBullet(text, true);
-      if (!bulletsOn) showToast('Bullet chat is off — flip the switch to see messages');
+      if (!bulletsOn) showToast('Message sent — turn on Bullet chat to see it here');
       barInput.value = '';
-      sendBtn.disabled = true;
+      barSend.disabled = true;
       barInput.focus({ preventScroll: true });
     };
 
     barInput.addEventListener('input', () => {
-      sendBtn.disabled = barInput.value.trim() === '';
+      barSend.disabled = barInput.value.trim() === '';
     });
     barInput.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
@@ -472,30 +478,42 @@ const Social = (() => {
         doSend();
       }
     });
-    sendBtn.addEventListener('click', doSend);
+    barSend.addEventListener('click', doSend);
     document.addEventListener('pointerdown', (e) => {
       if (!barOpen) return;
-      // Dismissing a bullet (or hitting the display toggle) is part of the
-      // chat surface — only a click on the page itself closes the composer.
-      if (barEl.contains(e.target) || e.target.closest('.bullet, .bullet-toggle')) return;
+      // Dismissing a bullet is part of the chat surface — only a click on the
+      // page itself closes the composer.
+      if (barEl.contains(e.target) || e.target.closest('.bullet')) return;
       closeBar();
     });
   }
 
-  function openBar() {
+  function openBar(instant = false) {
     ensureBar();
     barOpen = true;
     barEl.hidden = false;
+    if (instant) barEl.classList.add('is-instant');
     void barEl.offsetWidth;
     barEl.classList.add('is-on');
+    if (instant) {
+      void barEl.offsetWidth;
+      barEl.classList.remove('is-instant');
+    }
     barInput.focus({ preventScroll: true });
   }
 
-  function closeBar() {
+  function closeBar(instant = false) {
     if (!barOpen) return;
     barOpen = false;
     barInput.value = '';
+    barSend.disabled = true;
+    if (instant) barEl.classList.add('is-instant');
     barEl.classList.remove('is-on');
+    if (instant) {
+      barEl.hidden = true;
+      barEl.classList.remove('is-instant');
+      return;
+    }
     setTimeout(() => {
       if (!barOpen) barEl.hidden = true;
     }, 200);
@@ -506,34 +524,47 @@ const Social = (() => {
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
     e.preventDefault();
-    openBar();
+    openBar(true);
   });
 
-  // The display toggle lives next to the input bar (created with it).
-  function wireToggle(toggleBtn) {
-    if (!toggleBtn) return;
-    const render = () => toggleBtn.setAttribute('aria-checked', String(bulletsOn));
-    toggleBtn.addEventListener('click', () => {
+  function clearBulletDisplay() {
+    bulletLayer.replaceChildren();
+    clearTimeout(overflowTimer);
+    suppressed = 0;
+    if (overflowEl) {
+      overflowEl.classList.remove('is-on');
+      overflowEl.hidden = true;
+    }
+  }
+
+  // The whole button is the global display state; its moving lanes explain
+  // what "on" means without nesting a second switch inside the control.
+  function wireBulletButton(button) {
+    if (!button) return;
+    const render = () => {
+      button.setAttribute('aria-pressed', String(bulletsOn));
+      button.title = bulletsOn ? 'Hide bullet chat' : 'Show bullet chat';
+    };
+    button.addEventListener('click', () => {
       bulletsOn = !bulletsOn;
       try {
         localStorage.setItem('zw-bullets', bulletsOn ? '1' : '0');
       } catch {
         /* fine */
       }
-      if (!bulletsOn) bulletLayer.replaceChildren();
+      if (!bulletsOn) clearBulletDisplay();
       render();
     });
     render();
   }
 
   // Topbar hint chip: another way in, for people who never guess "/".
-  document.getElementById('chat-hint')?.addEventListener('click', openBar);
+  document.getElementById('chat-hint')?.addEventListener('click', () => openBar());
 
   // --- wiring ---------------------------------------------------------------
 
   return {
     location,
-    toast: showToast,
     bind(p) {
       presence = p;
     },
