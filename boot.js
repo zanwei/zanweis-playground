@@ -168,16 +168,22 @@
   let step = 0;
   setStep(0);
   // The sheet is opaque for the whole shuffle — perfect cover for preview
-  // iframes to fetch and parse, so the gallery lands already alive.
+  // iframes to fetch and parse, so the gallery lands already alive. On slow
+  // networks the shuffle holds its cover a little longer (up to two extra
+  // loops, +2s) until every preview reports in.
   dispatchEvent(new Event('boot:hydrate'));
+  let sweeps = 0;
   const timer = setInterval(() => {
     step++;
-    if (step < 4) {
-      setStep(step); // steps 1-3 complete the one loop through the moods
-      return;
+    if (step % 4 === 0) {
+      sweeps++;
+      if (window.__previewsReady || sweeps >= 2) {
+        clearInterval(timer);
+        settle();
+        setTimeout(reveal, SETTLE_HOLD);
+        return;
+      }
     }
-    clearInterval(timer);
-    settle();
-    setTimeout(reveal, SETTLE_HOLD);
+    setStep(step % 4); // keep looping through the moods
   }, BEAT);
 })();

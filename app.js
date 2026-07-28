@@ -56,14 +56,74 @@
   addEventListener('boot:done', hydratePreviews, { once: true }); // boot-skip path
   setTimeout(hydratePreviews, 6500); // failsafe: boot.js never signalling
 
+  // The boot shuffle holds its cover until every preview is in (or its own
+  // cap hits) — this flag is the signal it watches.
+  const loadedPreviews = new Set();
+  function notePreviewLoaded(frame) {
+    loadedPreviews.add(frame);
+    if (loadedPreviews.size >= previewFrames.length && previewFrames.length > 0) {
+      window.__previewsReady = true;
+    }
+  }
+
   function freezePreview(win) {
     // Park future rAF callbacks: loops stop scheduling work, canvases keep
-    // their last frame, compositor-driven CSS animation continues.
+    // their last frame, compositor-driven CSS animation continues. The
+    // freeze is reversible — thawing restores the native clock and releases
+    // everything that queued while parked.
+    if (win.__thaw) return; // already frozen
+    const nativeRaf = win.requestAnimationFrame.bind(win);
+    const nativeCancel = win.cancelAnimationFrame.bind(win);
     const queue = [];
     win.requestAnimationFrame = (cb) => queue.push(cb);
     win.cancelAnimationFrame = (id) => {
       if (id >= 1 && id <= queue.length) queue[id - 1] = null;
     };
+    win.__thaw = () => {
+      win.__thaw = null;
+      win.requestAnimationFrame = nativeRaf;
+      win.cancelAnimationFrame = nativeCancel;
+      for (const cb of queue) if (cb) nativeRaf(cb);
+      queue.length = 0;
+    };
+  }
+
+  function thawPreview(win) {
+    win.__thaw?.();
+  }
+
+  // When the playground closes, the card must show what the user just did —
+  // mirror the modal component's public attribute state onto the preview
+  // copy (observedAttributes is every component's own contract), thawed so
+  // it animates to the new state, then parked again once settled.
+  function syncPreviewState(item) {
+    if (item.embed || !item.tag) return;
+    try {
+      const src = byModal.frame.contentDocument?.querySelector(item.tag);
+      const entry = previewFrames.find((p) => p.item === item);
+      const dstWin = entry?.frame.contentWindow;
+      const dst = entry?.frame.contentDocument?.querySelector(item.tag);
+      if (!src || !dst || !dstWin) return;
+      const attrs = src.constructor.observedAttributes || [];
+      if (!attrs.length) return;
+      thawPreview(dstWin);
+      for (const a of attrs) {
+        if (a === 'open') continue; // the preview's curated framing stays
+        const v = src.getAttribute(a);
+        if (v === null) dst.removeAttribute(a);
+        else if (dst.getAttribute(a) !== v) dst.setAttribute(a, v);
+      }
+      clearTimeout(entry.refreeze);
+      entry.refreeze = setTimeout(() => {
+        try {
+          freezePreview(dstWin);
+        } catch {
+          /* frame may be gone */
+        }
+      }, 2500);
+    } catch {
+      /* previews are best-effort */
+    }
   }
 
   // Card-click sound. Browsers cannot read the SYSTEM volume, so the loud-
@@ -137,6 +197,7 @@
       frame.addEventListener('load', () => {
         if (!frame.getAttribute('src')) return; // ignore the empty-frame load
         frame.classList.add('is-loaded');
+        notePreviewLoaded(frame);
         primePreview(item, frame);
       });
       previewFrames.push({ frame, item });
@@ -181,14 +242,22 @@
       // A demo may grab focus as it boots (the dialog calls showModal + focus).
       const ae = document.activeElement;
       if (ae && ae.closest && ae.closest('.card-frame')) ae.blur();
-      // Let entrance animations settle, then stop the demo's clock.
-      setTimeout(() => {
+      // Let entrance animations settle, then stop the demo's clock. The
+      // timer lives on the preview's entry so syncPreviewState can cancel
+      // it — an orphan freeze landing inside a thaw window would park the
+      // card mid-animation with no one left to wake it.
+      const entry = previewFrames.find((p) => p.frame === frame);
+      const freezeTimer = setTimeout(() => {
         try {
           freezePreview(win);
         } catch {
           /* frame may be gone */
         }
       }, 3500);
+      if (entry) {
+        clearTimeout(entry.refreeze);
+        entry.refreeze = freezeTimer;
+      }
     } catch {
       /* previews are best-effort */
     }
@@ -331,6 +400,9 @@
     const source = !reduceMotion.matches && cardMediaFor(item.slug);
     openItem = null;
     clearTimeout(morphTimer);
+    // The card behind the returning window updates first, so the flight
+    // lands on the state the user just left.
+    syncPreviewState(item);
 
     const win = byModal.window;
     if (source) {
@@ -342,8 +414,14 @@
       const first = layoutRect(win);
       const target = source.getBoundingClientRect();
       // Static radius compensation: corners must MATCH THE CARD at landing.
+      // Set under transition:none — otherwise the base border-radius
+      // transition starts animating and is cancelled mid-flight (a visible
+      // corner stutter) when is-closing swaps the transition list.
       const scale = target.width / first.width;
+      win.style.transition = 'none';
       win.style.borderRadius = `${Math.min(32, Math.round(tokenMs('--radius', 10) / scale))}px`;
+      void win.offsetWidth;
+      win.style.transition = '';
       if (item.embed) {
         // The embed's viewer chrome would stretch badly — swap to the
         // thumbnail (the card's own pixels) for the flight, instantly.
@@ -495,4 +573,21 @@
   // Deep links resolve only after presence exists, so the focus broadcast
   // isn't lost (and a bad hash can't abort init).
   if (location.hash) syncToHash();
+
+  // Cache layer for repeat visits — registered late so it never competes
+  // with the first load it exists to speed up. Never in dev: a cache over
+  // the very files being edited hides every change, so localhost actively
+  // unregisters any worker left behind by an earlier deploy test.
+  if ('serviceWorker' in navigator) {
+    const isDev = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    if (isDev) {
+      navigator.serviceWorker.getRegistrations?.().then((rs) => rs.forEach((r) => r.unregister()));
+    } else {
+      setTimeout(() => {
+        navigator.serviceWorker.register('sw.js').catch(() => {
+          /* blocked: repeat visits just stay network-speed */
+        });
+      }, 4000);
+    }
+  }
 })();
