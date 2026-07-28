@@ -678,9 +678,8 @@ html.revealing .sheet {
   filter: none;
 }
 
-/* iOS-style close: the window visibly flies home over the full fast
-   duration, staying opaque for the first stretch and fading only near the
-   end; the dim clears in sync. A closing modal must not eat clicks. */
+/* iOS-style close: the window flies home over the full fast duration while
+   its opacity hands the final geometry back to the original card. */
 .playground.is-closing {
   pointer-events: none;
 }
@@ -697,7 +696,7 @@ html.revealing .sheet {
   filter: none;
   transition:
     transform var(--duration-fast) var(--ease-smooth-out),
-    opacity var(--duration-quick) var(--ease-out) 120ms;
+    opacity var(--duration-quick) var(--ease-smooth-out);
 }
 
 /* During the matched-geometry flight only a solid surface moves: chips are
@@ -711,8 +710,14 @@ html.revealing .sheet {
   transition: none;
 }
 
-/* The return flight (matched-geometry close): chrome hides, CONTENT stays —
-   the surface rides home opaque and lands as the card it came from. */
+/* During either flight, chrome and live content stay out of the handoff. */
+.playground-window.is-morphing {
+  transition:
+    transform var(--duration-fast) var(--ease-smooth-out),
+    opacity var(--duration-quick) var(--ease-smooth-out) 40ms,
+    filter var(--duration-fast) var(--ease-smooth-out);
+}
+
 .playground-window.is-returning {
   will-change: transform;
 }
@@ -734,9 +739,11 @@ html.revealing .sheet {
 }
 
 .playground.is-closing .playground-window.is-returning {
-  opacity: 1;
+  opacity: 0;
   filter: none;
-  transition: transform var(--duration-fast) var(--ease-smooth-out);
+  transition:
+    transform var(--duration-fast) var(--ease-smooth-out),
+    opacity var(--duration-quick) var(--ease-smooth-out);
 }
 
 .playground-window.is-morphing .playground-head {
@@ -856,8 +863,7 @@ html.revealing .sheet {
   opacity: 1;
 }
 
-/* Placeholder thumbnail while a heavy embed boots: appears the instant the
-   flight lands, then yields to the live view with a blur-masked crossfade. */
+/* Static artwork, or a landing placeholder that yields to a live demo. */
 .pg-thumb {
   position: absolute;
   inset: 0;
@@ -875,10 +881,27 @@ html.revealing .sheet {
   display: none;
 }
 
+.playground-body.is-static .playground-frame {
+  visibility: hidden;
+}
+
+.playground-body.is-static .pg-thumb {
+  object-fit: cover;
+  opacity: 1;
+  filter: none;
+}
+
 /* masked during the flight like everything else — only a solid surface flies */
 .playground-window.is-morphing .pg-thumb {
   opacity: 0;
   transition: none;
+}
+
+/* Static artwork is the surface, not a loading placeholder: let the window's
+   own opacity handoff reveal it so there is no second fade after landing. */
+.playground-window.is-morphing .playground-body.is-static .pg-thumb {
+  opacity: 1;
+  filter: none;
 }
 
 .playground-body.is-live .pg-thumb {

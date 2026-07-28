@@ -108,9 +108,8 @@
     );
 
     if (item.type === 'figma') {
-      // Figma cards preview as a vendored thumbnail — none of the live-demo
-      // machinery (hydration, priming, freezing) applies. The playground
-      // loads the real interactive embed on demand.
+      // Figma explorations stay lightweight everywhere: the card and
+      // playground share one vendored image, while Source opens Figma.
       card.innerHTML = `
         <div class="card-media" style="aspect-ratio: ${item.aspect}; background: ${item.bg}">
           <img class="figma-thumb" src="${item.thumb}" alt="" loading="lazy" />
@@ -219,28 +218,19 @@
     return typeof p === 'string' && p.startsWith('components/') ? p : 'about:blank';
   }
 
-  // What the playground iframe loads: a vendored demo, or (for figma cards)
-  // the interactive embed — allow-listed to Figma's embed origin only.
+  // Only the repo demos load in the playground iframe. Figma explorations are
+  // rendered by the static image layer instead.
   function playgroundUrl(item) {
-    if (item.embed) {
-      return item.embed.startsWith('https://embed.figma.com/') ? item.embed : 'about:blank';
-    }
     return demoUrl(item.demo);
   }
 
   function markPlaygroundFrameReady(frame, item, expected, epoch) {
     if (epoch !== playgroundEpoch || frame !== byModal.frame || openItem !== item) return;
     if (frame.classList.contains('is-ready') || frame.getAttribute('src') !== expected) return;
-    if (item.embed) {
-      // A committed Figma document is cross-origin. If its document is still
-      // accessible, this is a duplicate load from the staging about:blank.
-      if (frame.contentDocument) return;
-    } else {
-      try {
-        if (!frame.contentWindow.location.pathname.endsWith(item.demo)) return;
-      } catch {
-        return;
-      }
+    try {
+      if (!frame.contentWindow.location.pathname.endsWith(item.demo)) return;
+    } catch {
+      return;
     }
 
     frame.classList.add('is-ready');
@@ -252,7 +242,7 @@
         if (e.key === 'Escape' && !e.defaultPrevented) closePlayground();
       });
     } catch {
-      /* cross-origin demo: the header close button still works */
+      /* a replaced frame can disappear between load and listener setup */
     }
   }
 
@@ -295,14 +285,6 @@
     return { left: el.offsetLeft, top: el.offsetTop, width: el.offsetWidth, height: el.offsetHeight };
   }
 
-  function matchedRadius(source, cardRect, windowRect) {
-    const radius =
-      parseFloat(getComputedStyle(source).borderTopLeftRadius) || tokenMs('--radius', 10);
-    const scaleX = Math.max(cardRect.width / windowRect.width, 1e-4);
-    const scaleY = Math.max(cardRect.height / windowRect.height, 1e-4);
-    return `${radius / scaleX}px / ${radius / scaleY}px`;
-  }
-
   let morphTimer = null;
 
   function cancelFlightTimers() {
@@ -320,7 +302,7 @@
 
   function clearFlightArtifacts() {
     setFlightState(null);
-    for (const property of ['transform', 'transform-origin', 'transition', 'border-radius']) {
+    for (const property of ['transform', 'transform-origin', 'transition', 'opacity']) {
       byModal.window.style.removeProperty(property);
     }
     // Defensive cleanup for a close interrupted while running older code.
@@ -332,7 +314,7 @@
     morphTimer = null;
     if (epoch !== playgroundEpoch || openItem !== item) return;
     clearFlightArtifacts();
-    if (!item.embed) replacePlaygroundFrame(item, epoch);
+    if (item.demo) replacePlaygroundFrame(item, epoch);
     // inert invalidates style for the whole shell subtree (8 iframe
     // documents) — never spend that on a flight-critical frame.
     shell.inert = true;
@@ -351,6 +333,7 @@
     // Freeze an interrupted return at its current visual matrix, then retarget
     // that same surface to its open resting position without a geometry jump.
     const interruptedTransform = wasClosing ? getComputedStyle(win).transform : null;
+    const interruptedOpacity = wasClosing ? getComputedStyle(win).opacity : null;
     const epoch = ++playgroundEpoch;
     cancelFlightTimers();
     // Capture the return target only on a fresh open — switching items while
@@ -364,23 +347,23 @@
     byModal.body.style.background = item.bg;
     byModal.frame.classList.remove('is-ready');
     byModal.body.classList.remove('is-live');
+    byModal.body.classList.toggle('is-static', Boolean(item.image));
     byModal.body.classList.toggle('has-thumb', Boolean(item.thumb));
 
-    // While a heavy embed boots, the modal shows the same thumbnail the card
-    // did — landing continuity plus zero blank time. Live content crossfades
-    // in over it when ready.
+    // Static explorations keep this image for the whole visit. A demo may use
+    // the same layer as a landing placeholder before its iframe is ready.
     if (item.thumb) {
       byModal.thumb.src = item.thumb;
+      byModal.thumb.alt = item.image ? `${item.title} preview` : '';
       byModal.thumb.hidden = false;
     } else {
       byModal.thumb.hidden = true;
       byModal.thumb.removeAttribute('src');
+      byModal.thumb.alt = '';
     }
 
-    // Cross-origin embeds parse in their own process — they cannot cost the
-    // flight a single frame, so start their network time immediately. Only
-    // same-origin demos wait for landing.
-    if (item.embed) replacePlaygroundFrame(item, epoch);
+    // Drop a previously running demo when switching to a static exploration.
+    if (item.image) replacePlaygroundFrame();
 
     byModal.root.hidden = false;
 
@@ -388,7 +371,7 @@
       win.style.transition = 'none';
       win.style.transformOrigin = '0 0';
       win.style.transform = interruptedTransform === 'none' ? '' : interruptedTransform;
-      win.style.removeProperty('border-radius');
+      win.style.opacity = interruptedOpacity;
       byModal.frame.style.removeProperty('opacity');
       byModal.frame.style.removeProperty('transition');
       byModal.root.classList.remove('is-closing');
@@ -397,6 +380,7 @@
       void win.offsetWidth;
       win.style.removeProperty('transition');
       win.style.removeProperty('transform');
+      win.style.removeProperty('opacity');
       morphTimer = setTimeout(
         () => finishPlaygroundOpen(item, epoch),
         fastMs() + 30,
@@ -426,22 +410,23 @@
       setFlightState('opening');
       const first = source.getBoundingClientRect();
       const last = layoutRect(win);
-      const takeoffRadius = matchedRadius(source, first, last);
       win.style.transformOrigin = '0 0';
       win.style.transition = 'none';
       win.style.transform = flipTransform(first, last);
-      // Counter-scale both axes so a non-uniform FLIP still meets the card
-      // with the same circular corner at the card endpoint.
-      win.style.borderRadius = takeoffRadius;
+      // The card owns the first visual beat; the fixed 12px modal surface
+      // fades in only as it nears its resting geometry. This avoids both the
+      // non-uniform-radius snap and a paint-heavy border-radius animation.
+      win.style.opacity = '0';
       void win.offsetWidth;
       win.style.removeProperty('transition');
       win.style.removeProperty('transform');
+      win.style.removeProperty('opacity');
       morphTimer = setTimeout(
         () => finishPlaygroundOpen(item, epoch),
         fastMs() + 30,
       );
     } else if (!wasClosing && !(wasOpening && isSwitch)) {
-      if (!item.embed) replacePlaygroundFrame(item, epoch);
+      if (item.demo) replacePlaygroundFrame(item, epoch);
       void byModal.root.offsetWidth; // commit hidden -> visible before transitioning
       byModal.root.classList.add('is-open');
       // aria-modal only claims the background is out of reach; inert makes it so.
@@ -466,19 +451,17 @@
 
     const win = byModal.window;
     if (source) {
-      // Reverse flight, matched-geometry style: the SAME surface rides home
-      // fully opaque with its content aboard — figma cards carry the card's
-      // exact thumbnail, demos keep their live view (the mild stretch is
-      // what sells "same element"). Only the chrome chips hide.
+      // Reverse flight: the modal starts moving home, then fades early enough
+      // for the original card to own the final geometry and its 10px corners.
       const first = layoutRect(win);
       const target = source.getBoundingClientRect();
       const currentTransform = getComputedStyle(win).transform;
+      const currentOpacity = getComputedStyle(win).opacity;
       const returnTransform = flipTransform(target, first);
-      const returnRadius = matchedRadius(source, target, first);
       win.style.transition = 'none';
       win.style.transform = currentTransform === 'none' ? 'none' : currentTransform;
       win.style.transformOrigin = '0 0';
-      win.style.borderRadius = returnRadius;
+      win.style.opacity = currentOpacity;
       setFlightState('returning');
       if (item.thumb) {
         byModal.thumb.hidden = false;
@@ -489,6 +472,7 @@
       void win.offsetWidth;
       win.style.removeProperty('transition');
       win.style.transform = returnTransform;
+      win.style.removeProperty('opacity');
     } else {
       clearFlightArtifacts();
       byModal.root.classList.add('is-closing');
@@ -503,7 +487,8 @@
       replacePlaygroundFrame();
       byModal.thumb.hidden = true;
       byModal.thumb.removeAttribute('src');
-      byModal.body.classList.remove('has-thumb', 'is-live');
+      byModal.thumb.alt = '';
+      byModal.body.classList.remove('has-thumb', 'is-live', 'is-static');
       clearFlightArtifacts();
       // Un-inert after landing (same shell-wide style invalidation as open),
       // and only then hand focus back — focus() on an inert subtree is a no-op.
