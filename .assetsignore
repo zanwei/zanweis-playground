@@ -1,5 +1,5 @@
 server.js
-src
+/src
 .wrangler
 wrangler.jsonc
 plans
