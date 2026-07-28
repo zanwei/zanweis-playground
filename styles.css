@@ -711,6 +711,34 @@ html.revealing .sheet {
   transition: none;
 }
 
+/* The return flight (matched-geometry close): chrome hides, CONTENT stays —
+   the surface rides home opaque and lands as the card it came from. */
+.playground-window.is-returning {
+  will-change: transform;
+}
+
+.playground-window.is-returning .playground-head {
+  opacity: 0;
+  transition: none;
+}
+
+.playground-window.is-returning .playground-body.has-thumb .playground-frame {
+  opacity: 0;
+  transition: none;
+}
+
+.playground-window.is-returning .playground-body.has-thumb .pg-thumb {
+  opacity: 1;
+  filter: none;
+  transition: none;
+}
+
+.playground.is-closing .playground-window.is-returning {
+  opacity: 1;
+  filter: none;
+  transition: transform var(--duration-fast) var(--ease-smooth-out);
+}
+
 .playground-window.is-morphing .playground-head {
   transform: translateY(4px);
 }
