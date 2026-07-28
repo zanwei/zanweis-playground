@@ -1336,6 +1336,13 @@ html.revealing .sheet {
     border: 0;
   }
 
+  /* A 4:3 artwork has no interactive surface that benefits from portrait
+     cropping. Keep the whole exploration visible and blend the letterbox
+     area with its sampled edge color from the catalog. */
+  .playground-body.is-static .pg-thumb {
+    object-fit: contain;
+  }
+
   .playground-head {
     padding: calc(10px + env(safe-area-inset-top)) 10px 10px 14px;
     gap: 8px;

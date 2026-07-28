@@ -134,10 +134,34 @@ for (const item of CATALOG) {
 // Figma logo explorations. Both the card and playground use a vendored static
 // image; Source remains the way into the original Figma file.
 const FIGMA_FILES = [
-  { slug: 'dia-logo', title: 'Dia Logo', key: 'b6dp7Bk4Nc40b223KTStZ0', file: 'Dia-logo--Community-' },
-  { slug: 'linear-logo', title: 'Linear Logo', key: 'FaC6zeEtEwaLWn2JXpVgYK', file: 'Linear--Community-' },
-  { slug: 'fontdetector-logo', title: 'FontDetector Logo', key: 'lx9dzGhWQf7UrNUln8qZ4G', file: 'FontDetector-Logo--Community-' },
-  { slug: 'clear-logo', title: 'Clear App Logo', key: '2H97LwDRKcrkL4Zf605ufj', file: 'Clear-App-Logo--Community-' },
+  {
+    slug: 'dia-logo',
+    title: 'Dia Logo',
+    key: 'b6dp7Bk4Nc40b223KTStZ0',
+    file: 'Dia-logo--Community-',
+    bg: '#f8fcff',
+  },
+  {
+    slug: 'linear-logo',
+    title: 'Linear Logo',
+    key: 'FaC6zeEtEwaLWn2JXpVgYK',
+    file: 'Linear--Community-',
+    bg: '#000000',
+  },
+  {
+    slug: 'fontdetector-logo',
+    title: 'FontDetector Logo',
+    key: 'lx9dzGhWQf7UrNUln8qZ4G',
+    file: 'FontDetector-Logo--Community-',
+    bg: '#f7f7f7',
+  },
+  {
+    slug: 'clear-logo',
+    title: 'Clear App Logo',
+    key: '2H97LwDRKcrkL4Zf605ufj',
+    file: 'Clear-App-Logo--Community-',
+    bg: 'linear-gradient(#191b2a 0 32.7%, #010202 67.3% 100%)',
+  },
 ];
 
 for (const f of FIGMA_FILES) {
@@ -149,7 +173,7 @@ for (const f of FIGMA_FILES) {
     image,
     thumb: image,
     github: `https://www.figma.com/design/${f.key}/${f.file}`,
-    bg: '#ffffff',
+    bg: f.bg,
     aspect: '4 / 3',
   });
 }
