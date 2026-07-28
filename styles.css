@@ -663,8 +663,7 @@ html.revealing .sheet {
   transition:
     opacity var(--duration-fast) var(--ease-smooth-out),
     transform var(--duration-fast) var(--ease-smooth-out),
-    filter var(--duration-fast) var(--ease-smooth-out),
-    border-radius var(--duration-quick) var(--ease-out);
+    filter var(--duration-fast) var(--ease-smooth-out);
 }
 
 .playground.is-open .playground-backdrop {
@@ -723,7 +722,12 @@ html.revealing .sheet {
   transition: none;
 }
 
-.playground-window.is-returning .pg-thumb {
+.playground-window.is-returning .playground-body.has-thumb .playground-frame {
+  opacity: 0;
+  transition: none;
+}
+
+.playground-window.is-returning .playground-body.has-thumb .pg-thumb {
   opacity: 1;
   filter: none;
   transition: none;

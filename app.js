@@ -201,6 +201,7 @@
   let openItem = null;
   let lastFocus = null;
   let closeTimer = null;
+  let playgroundEpoch = 0;
   const shell = document.querySelector('.shell');
 
   // matched-geometry helpers: the modal surface flies between the card's
@@ -227,6 +228,60 @@
     return demoUrl(item.demo);
   }
 
+  function markPlaygroundFrameReady(frame, item, expected, epoch) {
+    if (epoch !== playgroundEpoch || frame !== byModal.frame || openItem !== item) return;
+    if (frame.classList.contains('is-ready') || frame.getAttribute('src') !== expected) return;
+    if (item.embed) {
+      // A committed Figma document is cross-origin. If its document is still
+      // accessible, this is a duplicate load from the staging about:blank.
+      if (frame.contentDocument) return;
+    } else {
+      try {
+        if (!frame.contentWindow.location.pathname.endsWith(item.demo)) return;
+      } catch {
+        return;
+      }
+    }
+
+    frame.classList.add('is-ready');
+    byModal.body.classList.add('is-live'); // placeholder thumb yields to the live view
+    // Keyboard focus lives inside the demo while the user plays with it, so
+    // Escape must be caught in the iframe too (same origin).
+    try {
+      frame.contentWindow.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !e.defaultPrevented) closePlayground();
+      });
+    } catch {
+      /* cross-origin demo: the header close button still works */
+    }
+  }
+
+  function replacePlaygroundFrame(item = null, epoch = playgroundEpoch) {
+    const frame = document.createElement('iframe');
+    frame.className = 'playground-frame';
+    frame.id = 'pg-frame';
+    frame.title = 'Component playground';
+
+    if (item) {
+      const expected = playgroundUrl(item);
+      let targetStarted = false;
+      frame.addEventListener('load', () => {
+        if (epoch !== playgroundEpoch || frame !== byModal.frame || openItem !== item) return;
+        if (!targetStarted) {
+          targetStarted = true;
+          if (expected !== 'about:blank') frame.src = expected;
+          return;
+        }
+        markPlaygroundFrameReady(frame, item, expected, epoch);
+      });
+    }
+
+    const previous = byModal.frame;
+    byModal.frame = frame;
+    previous.replaceWith(frame);
+    return frame;
+  }
+
   function flipTransform(from, to) {
     return `translate(${from.left - to.left}px, ${from.top - to.top}px)
       scale(${from.width / to.width}, ${from.height / to.height})`;
@@ -240,16 +295,68 @@
     return { left: el.offsetLeft, top: el.offsetTop, width: el.offsetWidth, height: el.offsetHeight };
   }
 
+  function matchedRadius(source, cardRect, windowRect) {
+    const radius =
+      parseFloat(getComputedStyle(source).borderTopLeftRadius) || tokenMs('--radius', 10);
+    const scaleX = Math.max(cardRect.width / windowRect.width, 1e-4);
+    const scaleY = Math.max(cardRect.height / windowRect.height, 1e-4);
+    return `${radius / scaleX}px / ${radius / scaleY}px`;
+  }
+
   let morphTimer = null;
+
+  function cancelFlightTimers() {
+    clearTimeout(morphTimer);
+    clearTimeout(closeTimer);
+    morphTimer = null;
+    closeTimer = null;
+  }
+
+  function setFlightState(state) {
+    const win = byModal.window;
+    win.classList.toggle('is-morphing', state === 'opening');
+    win.classList.toggle('is-returning', state === 'returning');
+  }
+
+  function clearFlightArtifacts() {
+    setFlightState(null);
+    for (const property of ['transform', 'transform-origin', 'transition', 'border-radius']) {
+      byModal.window.style.removeProperty(property);
+    }
+    // Defensive cleanup for a close interrupted while running older code.
+    byModal.frame.style.removeProperty('opacity');
+    byModal.frame.style.removeProperty('transition');
+  }
+
+  function finishPlaygroundOpen(item, epoch) {
+    morphTimer = null;
+    if (epoch !== playgroundEpoch || openItem !== item) return;
+    clearFlightArtifacts();
+    if (!item.embed) replacePlaygroundFrame(item, epoch);
+    // inert invalidates style for the whole shell subtree (8 iframe
+    // documents) — never spend that on a flight-critical frame.
+    shell.inert = true;
+    byModal.close.focus({ preventScroll: true });
+  }
 
   function openPlayground(item) {
     if (openItem?.slug === item.slug) return;
-    clearTimeout(closeTimer);
-    clearTimeout(morphTimer);
+    const win = byModal.window;
+    const wasClosing =
+      byModal.root.classList.contains('is-closing') &&
+      win.classList.contains('is-returning') &&
+      !reduceMotion.matches;
+    const wasOpening =
+      !wasClosing && win.classList.contains('is-morphing') && !reduceMotion.matches;
+    // Freeze an interrupted return at its current visual matrix, then retarget
+    // that same surface to its open resting position without a geometry jump.
+    const interruptedTransform = wasClosing ? getComputedStyle(win).transform : null;
+    const epoch = ++playgroundEpoch;
+    cancelFlightTimers();
     // Capture the return target only on a fresh open — switching items while
     // the modal is up must not overwrite it with the close button.
     const isSwitch = Boolean(openItem);
-    if (!openItem) lastFocus = document.activeElement;
+    lastFocus ??= document.activeElement;
     openItem = item;
 
     byModal.title.textContent = item.title;
@@ -257,6 +364,7 @@
     byModal.body.style.background = item.bg;
     byModal.frame.classList.remove('is-ready');
     byModal.body.classList.remove('is-live');
+    byModal.body.classList.toggle('has-thumb', Boolean(item.thumb));
 
     // While a heavy embed boots, the modal shows the same thumbnail the card
     // did — landing continuity plus zero blank time. Live content crossfades
@@ -272,46 +380,68 @@
     // Cross-origin embeds parse in their own process — they cannot cost the
     // flight a single frame, so start their network time immediately. Only
     // same-origin demos wait for landing.
-    if (item.embed) byModal.frame.src = playgroundUrl(item);
+    if (item.embed) replacePlaygroundFrame(item, epoch);
 
     byModal.root.hidden = false;
-    byModal.root.classList.remove('is-closing');
 
-    const win = byModal.window;
+    if (wasClosing) {
+      win.style.transition = 'none';
+      win.style.transformOrigin = '0 0';
+      win.style.transform = interruptedTransform === 'none' ? '' : interruptedTransform;
+      win.style.removeProperty('border-radius');
+      byModal.frame.style.removeProperty('opacity');
+      byModal.frame.style.removeProperty('transition');
+      byModal.root.classList.remove('is-closing');
+      byModal.root.classList.add('is-open');
+      setFlightState('opening');
+      void win.offsetWidth;
+      win.style.removeProperty('transition');
+      win.style.removeProperty('transform');
+      morphTimer = setTimeout(
+        () => finishPlaygroundOpen(item, epoch),
+        fastMs() + 30,
+      );
+    } else if (wasOpening && isSwitch) {
+      // The window is already travelling home from another card. Keep that
+      // continuous transform, but let the new navigation own the landing.
+      byModal.root.classList.remove('is-closing');
+      byModal.root.classList.add('is-open');
+      setFlightState('opening');
+      morphTimer = setTimeout(
+        () => finishPlaygroundOpen(item, epoch),
+        fastMs() + 30,
+      );
+    } else {
+      byModal.root.classList.remove('is-closing');
+      clearFlightArtifacts();
+    }
+
     const source = !isSwitch && !reduceMotion.matches && cardMediaFor(item.slug);
-    if (source) {
+    if (!wasClosing && !(wasOpening && isSwitch) && source) {
       // FLIP: jump straight to the open state, then start the window at the
       // card's rect and let one transform transition carry it home. The demo
       // iframe loads only after landing — it is masked during the flight
       // anyway, and parsing it mid-flight costs main-thread frames.
       byModal.root.classList.add('is-open');
-      win.classList.add('is-morphing');
+      setFlightState('opening');
       const first = source.getBoundingClientRect();
       const last = layoutRect(win);
+      const takeoffRadius = matchedRadius(source, first, last);
       win.style.transformOrigin = '0 0';
       win.style.transition = 'none';
       win.style.transform = flipTransform(first, last);
-      // Corners must match the card at takeoff (the scaled-down window's
-      // visual radius would otherwise read too tight); eased back after
-      // landing by the base border-radius transition.
-      const scaleStart = first.width / last.width;
-      win.style.borderRadius = `${Math.min(32, Math.round(tokenMs('--radius', 10) / scaleStart))}px`;
+      // Counter-scale both axes so a non-uniform FLIP still meets the card
+      // with the same circular corner at the card endpoint.
+      win.style.borderRadius = takeoffRadius;
       void win.offsetWidth;
-      win.style.transition = '';
-      win.style.transform = '';
-      morphTimer = setTimeout(() => {
-        win.classList.remove('is-morphing');
-        win.style.transformOrigin = '';
-        win.style.borderRadius = ''; // ease home to the resting 12px
-        if (openItem !== item) return;
-        if (!item.embed) byModal.frame.src = playgroundUrl(item);
-        // inert invalidates style for the whole shell subtree (8 iframe
-        // documents) — never spend that on a flight-critical frame.
-        shell.inert = true;
-        byModal.close.focus({ preventScroll: true });
-      }, fastMs() + 30);
-    } else {
-      if (!item.embed) byModal.frame.src = playgroundUrl(item);
+      win.style.removeProperty('transition');
+      win.style.removeProperty('transform');
+      morphTimer = setTimeout(
+        () => finishPlaygroundOpen(item, epoch),
+        fastMs() + 30,
+      );
+    } else if (!wasClosing && !(wasOpening && isSwitch)) {
+      if (!item.embed) replacePlaygroundFrame(item, epoch);
       void byModal.root.offsetWidth; // commit hidden -> visible before transitioning
       byModal.root.classList.add('is-open');
       // aria-modal only claims the background is out of reach; inert makes it so.
@@ -328,9 +458,11 @@
   function closePlayground() {
     if (!openItem) return;
     const item = openItem;
+    playgroundEpoch += 1;
     const source = !reduceMotion.matches && cardMediaFor(item.slug);
     openItem = null;
     clearTimeout(morphTimer);
+    morphTimer = null;
 
     const win = byModal.window;
     if (source) {
@@ -338,78 +470,52 @@
       // fully opaque with its content aboard — figma cards carry the card's
       // exact thumbnail, demos keep their live view (the mild stretch is
       // what sells "same element"). Only the chrome chips hide.
-      win.classList.add('is-returning');
       const first = layoutRect(win);
       const target = source.getBoundingClientRect();
-      // Static radius compensation: corners must MATCH THE CARD at landing.
-      const scale = target.width / first.width;
-      win.style.borderRadius = `${Math.min(32, Math.round(tokenMs('--radius', 10) / scale))}px`;
-      if (item.embed) {
-        // The embed's viewer chrome would stretch badly — swap to the
-        // thumbnail (the card's own pixels) for the flight, instantly.
-        byModal.frame.style.transition = 'none';
-        byModal.frame.style.opacity = '0';
-        byModal.thumb.hidden = false;
-        byModal.body.classList.remove('is-live');
-      }
+      const currentTransform = getComputedStyle(win).transform;
+      const returnTransform = flipTransform(target, first);
+      const returnRadius = matchedRadius(source, target, first);
+      win.style.transition = 'none';
+      win.style.transform = currentTransform === 'none' ? 'none' : currentTransform;
       win.style.transformOrigin = '0 0';
-      win.style.transform = flipTransform(target, first);
+      win.style.borderRadius = returnRadius;
+      setFlightState('returning');
+      if (item.thumb) {
+        byModal.thumb.hidden = false;
+      }
+      byModal.body.classList.toggle('has-thumb', Boolean(item.thumb));
+      byModal.root.classList.add('is-closing');
+      byModal.root.classList.remove('is-open');
+      void win.offsetWidth;
+      win.style.removeProperty('transition');
+      win.style.transform = returnTransform;
+    } else {
+      clearFlightArtifacts();
+      byModal.root.classList.add('is-closing');
+      byModal.root.classList.remove('is-open');
     }
-    byModal.root.classList.add('is-closing');
-    byModal.root.classList.remove('is-open');
     // The return flight runs the full --duration-fast; hide right at landing,
     // where the window exactly overlays the near-identical card.
     closeTimer = setTimeout(() => {
+      closeTimer = null;
       byModal.root.hidden = true;
-      byModal.root.classList.remove('is-closing');
-      byModal.frame.src = 'about:blank';
-      byModal.frame.style.transition = '';
-      byModal.frame.style.opacity = '';
+      byModal.root.classList.remove('is-open', 'is-closing');
+      replacePlaygroundFrame();
       byModal.thumb.hidden = true;
       byModal.thumb.removeAttribute('src');
-      byModal.body.classList.remove('is-live');
-      win.classList.remove('is-morphing', 'is-returning');
-      win.style.transform = '';
-      win.style.transformOrigin = '';
-      win.style.borderRadius = '';
+      byModal.body.classList.remove('has-thumb', 'is-live');
+      clearFlightArtifacts();
       // Un-inert after landing (same shell-wide style invalidation as open),
       // and only then hand focus back — focus() on an inert subtree is a no-op.
       shell.inert = false;
       lastFocus?.focus({ preventScroll: true });
       lastFocus = null;
-    }, fastMs() + 40);
+    }, reduceMotion.matches ? 0 : fastMs() + 40);
 
     if (location.hash) history.replaceState(null, '', location.pathname + location.search);
     presence?.focus(null);
   }
 
-  byModal.frame.addEventListener('load', () => {
-    if (!openItem) return;
-    // A late load from a previous item (or about:blank) must not mark the
-    // current frame ready — compare the document that actually loaded.
-    if (openItem.embed) {
-      // Cross-origin embed: contentWindow is sealed, so match the src
-      // attribute we set ourselves.
-      if (byModal.frame.getAttribute('src') !== openItem.embed) return;
-    } else {
-      try {
-        if (!byModal.frame.contentWindow.location.pathname.endsWith(openItem.demo)) return;
-      } catch {
-        return;
-      }
-    }
-    byModal.frame.classList.add('is-ready');
-    byModal.body.classList.add('is-live'); // placeholder thumb yields to the live view
-    // Keyboard focus lives inside the demo while the user plays with it, so
-    // Escape must be caught in the iframe too (same origin).
-    try {
-      byModal.frame.contentWindow.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && !e.defaultPrevented) closePlayground();
-      });
-    } catch {
-      /* cross-origin demo: the header close button still works */
-    }
-  });
   byModal.close.addEventListener('click', closePlayground);
   byModal.backdrop.addEventListener('click', closePlayground);
   addEventListener('keydown', (e) => {
