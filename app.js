@@ -106,8 +106,21 @@
       `${Math.min(index, 8) * tokenMs('--duration-stagger', 40)}ms`
     );
 
-    const [vw, vh] = item.viewport;
-    card.innerHTML = `
+    if (item.type === 'figma') {
+      // Figma cards preview as a vendored thumbnail — none of the live-demo
+      // machinery (hydration, priming, freezing) applies. The playground
+      // loads the real interactive embed on demand.
+      card.innerHTML = `
+        <div class="card-media" style="aspect-ratio: ${item.aspect}; background: ${item.bg}">
+          <img class="figma-thumb" src="${item.thumb}" alt="" loading="lazy" />
+          <button class="card-hit" aria-label="Open ${item.title} playground"></button>
+          <div class="card-visitors"></div>
+          <span class="card-label">${item.title}</span>
+          <span class="card-open">${ARROW_SVG}</span>
+        </div>`;
+    } else {
+      const [vw, vh] = item.viewport;
+      card.innerHTML = `
       <div class="card-media" style="aspect-ratio: ${item.aspect}; background: ${item.bg}">
         <div class="card-frame" inert>
           <iframe title="${item.title} preview" loading="lazy"
@@ -119,20 +132,21 @@
         <span class="card-open">${ARROW_SVG}</span>
       </div>`;
 
-    const frame = card.querySelector('iframe');
-    frame.addEventListener('load', () => {
-      if (!frame.getAttribute('src')) return; // ignore the empty-frame load
-      frame.classList.add('is-loaded');
-      primePreview(item, frame);
-    });
-    previewFrames.push({ frame, item });
+      const frame = card.querySelector('iframe');
+      frame.addEventListener('load', () => {
+        if (!frame.getAttribute('src')) return; // ignore the empty-frame load
+        frame.classList.add('is-loaded');
+        primePreview(item, frame);
+      });
+      previewFrames.push({ frame, item });
 
-    // Scale the fixed design viewport to the card's real width.
-    const media = card.querySelector('.card-media');
-    new ResizeObserver(([entry]) => {
-      const s = entry.contentRect.width / vw;
-      frame.style.transform = `scale(${s})`;
-    }).observe(media);
+      // Scale the fixed design viewport to the card's real width.
+      const media = card.querySelector('.card-media');
+      new ResizeObserver(([entry]) => {
+        const s = entry.contentRect.width / vw;
+        frame.style.transform = `scale(${s})`;
+      }).observe(media);
+    }
 
     card.querySelector('.card-hit').addEventListener('click', () => {
       playClick();
@@ -203,6 +217,15 @@
     return typeof p === 'string' && p.startsWith('components/') ? p : 'about:blank';
   }
 
+  // What the playground iframe loads: a vendored demo, or (for figma cards)
+  // the interactive embed — allow-listed to Figma's embed origin only.
+  function playgroundUrl(item) {
+    if (item.embed) {
+      return item.embed.startsWith('https://embed.figma.com/') ? item.embed : 'about:blank';
+    }
+    return demoUrl(item.demo);
+  }
+
   function flipTransform(from, to) {
     return `translate(${from.left - to.left}px, ${from.top - to.top}px)
       scale(${from.width / to.width}, ${from.height / to.height})`;
@@ -257,14 +280,14 @@
         win.classList.remove('is-morphing');
         win.style.transformOrigin = '';
         if (openItem !== item) return;
-        byModal.frame.src = demoUrl(item.demo);
+        byModal.frame.src = playgroundUrl(item);
         // inert invalidates style for the whole shell subtree (8 iframe
         // documents) — never spend that on a flight-critical frame.
         shell.inert = true;
         byModal.close.focus({ preventScroll: true });
       }, fastMs() + 30);
     } else {
-      byModal.frame.src = demoUrl(item.demo);
+      byModal.frame.src = playgroundUrl(item);
       void byModal.root.offsetWidth; // commit hidden -> visible before transitioning
       byModal.root.classList.add('is-open');
       // aria-modal only claims the background is out of reach; inert makes it so.
@@ -320,10 +343,16 @@
     if (!openItem) return;
     // A late load from a previous item (or about:blank) must not mark the
     // current frame ready — compare the document that actually loaded.
-    try {
-      if (!byModal.frame.contentWindow.location.pathname.endsWith(openItem.demo)) return;
-    } catch {
-      return;
+    if (openItem.embed) {
+      // Cross-origin embed: contentWindow is sealed, so match the src
+      // attribute we set ourselves.
+      if (byModal.frame.getAttribute('src') !== openItem.embed) return;
+    } else {
+      try {
+        if (!byModal.frame.contentWindow.location.pathname.endsWith(openItem.demo)) return;
+      } catch {
+        return;
+      }
     }
     byModal.frame.classList.add('is-ready');
     // Keyboard focus lives inside the demo while the user plays with it, so

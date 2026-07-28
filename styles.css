@@ -526,6 +526,16 @@ html.revealing .sheet {
   opacity: 1;
 }
 
+/* Figma cards: a plain thumbnail fills the media box. */
+.figma-thumb {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
 .card-hit {
   position: absolute;
   inset: 0;
