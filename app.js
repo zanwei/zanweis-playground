@@ -201,6 +201,7 @@
   let openItem = null;
   let lastFocus = null;
   let closeTimer = null;
+  let playgroundEpoch = 0;
   const shell = document.querySelector('.shell');
 
   // matched-geometry helpers: the modal surface flies between the card's
@@ -227,6 +228,60 @@
     return demoUrl(item.demo);
   }
 
+  function markPlaygroundFrameReady(frame, item, expected, epoch) {
+    if (epoch !== playgroundEpoch || frame !== byModal.frame || openItem !== item) return;
+    if (frame.classList.contains('is-ready') || frame.getAttribute('src') !== expected) return;
+    if (item.embed) {
+      // A committed Figma document is cross-origin. If its document is still
+      // accessible, this is a duplicate load from the staging about:blank.
+      if (frame.contentDocument) return;
+    } else {
+      try {
+        if (!frame.contentWindow.location.pathname.endsWith(item.demo)) return;
+      } catch {
+        return;
+      }
+    }
+
+    frame.classList.add('is-ready');
+    byModal.body.classList.add('is-live'); // placeholder thumb yields to the live view
+    // Keyboard focus lives inside the demo while the user plays with it, so
+    // Escape must be caught in the iframe too (same origin).
+    try {
+      frame.contentWindow.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !e.defaultPrevented) closePlayground();
+      });
+    } catch {
+      /* cross-origin demo: the header close button still works */
+    }
+  }
+
+  function replacePlaygroundFrame(item = null, epoch = playgroundEpoch) {
+    const frame = document.createElement('iframe');
+    frame.className = 'playground-frame';
+    frame.id = 'pg-frame';
+    frame.title = 'Component playground';
+
+    if (item) {
+      const expected = playgroundUrl(item);
+      let targetStarted = false;
+      frame.addEventListener('load', () => {
+        if (epoch !== playgroundEpoch || frame !== byModal.frame || openItem !== item) return;
+        if (!targetStarted) {
+          targetStarted = true;
+          if (expected !== 'about:blank') frame.src = expected;
+          return;
+        }
+        markPlaygroundFrameReady(frame, item, expected, epoch);
+      });
+    }
+
+    const previous = byModal.frame;
+    byModal.frame = frame;
+    previous.replaceWith(frame);
+    return frame;
+  }
+
   function flipTransform(from, to) {
     return `translate(${from.left - to.left}px, ${from.top - to.top}px)
       scale(${from.width / to.width}, ${from.height / to.height})`;
@@ -244,6 +299,7 @@
 
   function openPlayground(item) {
     if (openItem?.slug === item.slug) return;
+    const epoch = ++playgroundEpoch;
     clearTimeout(closeTimer);
     clearTimeout(morphTimer);
     // Capture the return target only on a fresh open — switching items while
@@ -272,7 +328,7 @@
     // Cross-origin embeds parse in their own process — they cannot cost the
     // flight a single frame, so start their network time immediately. Only
     // same-origin demos wait for landing.
-    if (item.embed) byModal.frame.src = playgroundUrl(item);
+    if (item.embed) replacePlaygroundFrame(item, epoch);
 
     byModal.root.hidden = false;
     byModal.root.classList.remove('is-closing');
@@ -297,15 +353,15 @@
       morphTimer = setTimeout(() => {
         win.classList.remove('is-morphing');
         win.style.transformOrigin = '';
-        if (openItem !== item) return;
-        if (!item.embed) byModal.frame.src = playgroundUrl(item);
+        if (epoch !== playgroundEpoch || openItem !== item) return;
+        if (!item.embed) replacePlaygroundFrame(item, epoch);
         // inert invalidates style for the whole shell subtree (8 iframe
         // documents) — never spend that on a flight-critical frame.
         shell.inert = true;
         byModal.close.focus({ preventScroll: true });
       }, fastMs() + 30);
     } else {
-      if (!item.embed) byModal.frame.src = playgroundUrl(item);
+      if (!item.embed) replacePlaygroundFrame(item, epoch);
       void byModal.root.offsetWidth; // commit hidden -> visible before transitioning
       byModal.root.classList.add('is-open');
       // aria-modal only claims the background is out of reach; inert makes it so.
@@ -321,6 +377,7 @@
 
   function closePlayground() {
     if (!openItem) return;
+    playgroundEpoch += 1;
     const source = !reduceMotion.matches && cardMediaFor(openItem.slug);
     openItem = null;
     clearTimeout(morphTimer);
@@ -342,7 +399,7 @@
     closeTimer = setTimeout(() => {
       byModal.root.hidden = true;
       byModal.root.classList.remove('is-closing');
-      byModal.frame.src = 'about:blank';
+      replacePlaygroundFrame();
       byModal.thumb.hidden = true;
       byModal.thumb.removeAttribute('src');
       byModal.body.classList.remove('is-live');
@@ -360,33 +417,6 @@
     presence?.focus(null);
   }
 
-  byModal.frame.addEventListener('load', () => {
-    if (!openItem) return;
-    // A late load from a previous item (or about:blank) must not mark the
-    // current frame ready — compare the document that actually loaded.
-    if (openItem.embed) {
-      // Cross-origin embed: contentWindow is sealed, so match the src
-      // attribute we set ourselves.
-      if (byModal.frame.getAttribute('src') !== openItem.embed) return;
-    } else {
-      try {
-        if (!byModal.frame.contentWindow.location.pathname.endsWith(openItem.demo)) return;
-      } catch {
-        return;
-      }
-    }
-    byModal.frame.classList.add('is-ready');
-    byModal.body.classList.add('is-live'); // placeholder thumb yields to the live view
-    // Keyboard focus lives inside the demo while the user plays with it, so
-    // Escape must be caught in the iframe too (same origin).
-    try {
-      byModal.frame.contentWindow.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && !e.defaultPrevented) closePlayground();
-      });
-    } catch {
-      /* cross-origin demo: the header close button still works */
-    }
-  });
   byModal.close.addEventListener('click', closePlayground);
   byModal.backdrop.addEventListener('click', closePlayground);
   addEventListener('keydown', (e) => {
