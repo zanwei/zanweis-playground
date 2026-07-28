@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>zanwei’s playground</title>
+    <meta
+      name="description"
+      content="Eight hand-built web components, embedded live from their repos. Cursors are shared, so bring a friend."
+    />
+    <link rel="canonical" href="https://zanweis-playground.zanwei.workers.dev/" />
+    <meta name="theme-color" content="#ffffff" />
+
+    <!-- social cards -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="zanwei’s playground" />
+    <meta property="og:title" content="zanwei’s playground" />
+    <meta
+      property="og:description"
+      content="Eight hand-built web components, embedded live from their repos. Cursors are shared, so bring a friend."
+    />
+    <meta property="og:url" content="https://zanweis-playground.zanwei.workers.dev/" />
+    <meta property="og:image" content="https://zanweis-playground.zanwei.workers.dev/assets/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <!-- icons -->
+    <link rel="icon" href="/favicon.ico" sizes="48x48" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/assets/favicon-16.png" />
+    <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "name": "zanwei’s playground",
+        "url": "https://zanweis-playground.zanwei.workers.dev/",
+        "description": "Eight hand-built web components, embedded live from their repos, with shared live cursors.",
+        "author": { "@type": "Person", "name": "zanwei", "url": "https://github.com/zanwei" }
+      }
+    </script>
+    <link rel="stylesheet" href="styles.css" />
+    <script>
+      // Mark the boot phase before first paint so card entrances stay paused
+      // under the loader. A brand-click refresh sets a one-shot flag that
+      // skips the intro entirely. Dead-man's switch: if boot.js never runs,
+      // release the page anyway so the loader can't trap it.
+      (function () {
+        var skip = false;
+        try {
+          skip = sessionStorage.getItem('zw-skip-boot') === '1';
+          if (skip) sessionStorage.removeItem('zw-skip-boot');
+        } catch (e) {}
+        if (skip) {
+          document.documentElement.classList.add('boot-skip');
+          return;
+        }
+        document.documentElement.classList.add('booting');
+        // The intro doubles the document height, so a restored scroll offset
+        // would land the page mid-air. Own the scroll position ourselves.
+        try {
+          history.scrollRestoration = 'manual';
+        } catch (e) {}
+        addEventListener('DOMContentLoaded', function () {
+          scrollTo(0, 0);
+        });
+        window.__bootFailsafe = setTimeout(function () {
+          document.documentElement.classList.remove('booting', 'revealing');
+          var b = document.getElementById('boot');
+          if (b) b.setAttribute('data-hidden', '');
+        }, 5200);
+      })();
+    </script>
+  </head>
+  <body>
+    <div class="boot" id="boot" aria-hidden="true">
+      <div class="boot-grid" id="boot-grid"></div>
+    </div>
+
+    <div class="sheet" id="sheet">
+    <div class="shell">
+      <div class="top-sentinel" aria-hidden="true"></div>
+      <header class="topbar" id="topbar" data-anchor="shell:brand">
+        <a class="brand" href="./" aria-label="zanwei’s playground">
+          <svg class="brand-face" viewBox="0 0 199 198" aria-hidden="true"><path d="" /></svg>
+        </a>
+        <div class="topbar-tools">
+          <button class="chat-hint" id="chat-hint" title="Open bullet chat">
+            <kbd>/</kbd>
+            <span>for bullet chat</span>
+          </button>
+        <div class="online-wrap">
+          <button
+            class="online"
+            id="online-btn"
+            title="People on this page right now"
+            aria-haspopup="dialog"
+            aria-expanded="false"
+          >
+            <span class="online-dot" aria-hidden="true"></span>
+            <span class="t-digit-group" id="online-count"><span class="t-digit">1</span></span>
+            <span class="online-label">online</span>
+          </button>
+          <div class="globe-pop" id="globe-pop" role="dialog" aria-label="Who's here" hidden>
+            <div class="globe-wrap" id="globe-wrap"></div>
+          </div>
+        </div>
+        </div>
+      </header>
+
+      <main class="main">
+        <h1 class="visually-hidden">zanwei’s playground</h1>
+        <section class="masonry" id="masonry" aria-label="Component gallery"></section>
+      </main>
+    </div>
+    </div>
+
+    <div class="playground" id="playground" hidden>
+      <div class="playground-backdrop" id="pg-backdrop"></div>
+      <div
+        class="playground-window"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="pg-title"
+        data-anchor="shell:playground"
+      >
+        <header class="playground-head">
+          <h2 class="playground-title" id="pg-title"></h2>
+          <div class="playground-actions">
+            <a class="playground-source" id="pg-github" target="_blank" rel="noopener">
+              Source
+              <svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M7 17 17 7M9 7h8v8" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </a>
+            <button class="playground-close" id="pg-close" aria-label="Close playground">
+              <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+              </svg>
+            </button>
+          </div>
+        </header>
+        <div class="playground-body" id="pg-body">
+          <iframe class="playground-frame" id="pg-frame" title="Component playground"></iframe>
+        </div>
+      </div>
+    </div>
+
+    <script src="faces.js"></script>
+    <script src="catalog.js"></script>
+    <script src="vendor/cobe.js"></script>
+    <script src="social.js"></script>
+    <script src="fountain.js"></script>
+    <script src="presence.js"></script>
+    <script src="app.js"></script>
+    <script src="boot.js"></script>
+  </body>
+</html>

@@ -1,0 +1,178 @@
+{
+  "meta": {
+    "name": "reasoning-mixer-model-picker",
+    "description": "Dark cockpit-style AI model picker popover: three model rows (Sol/Terra/Luna) as horizontal 5-stop reasoning-effort sliders inside a recessed speckled well, plus a vertical ULTRA thermometer lever whose red ball drops, ignites violet, fills the tube and showers confetti dashes. Anchored above a chat input bar whose label live-updates.",
+    "source_references": ["Video from Twitter.mp4 — 752 frames @60fps, 1794x1120; keyframe sprite sheets at 2fps + 12/15/24fps dense extractions around open, row-switch, ULTRA on/off transitions; full-res crops with pixel sampling"],
+    "created_at": "2026-07-13"
+  },
+  "design_system": {
+    "color": {
+      "palette_type": "triadic saturated accents (orange/green/violet) on a near-black monochrome base",
+      "primary": { "hex": "#9D74F7", "role": "ULTRA mode identity — overrides any active row fill, stem, bulb, label glow, panel aura" },
+      "secondary": { "hex": "#F59F4F", "role": "Sol model fill + active label; Terra uses #5FE893, Luna uses #8B5CF6 (per-row identities)" },
+      "accent": { "hex": "#E13753", "role": "resting ULTRA lever ball — glossy red sphere begging to be pulled" },
+      "neutral": {
+        "scale": ["#101010", "#1B1B1B", "#232323", "#2F2F2F", "#515151", "#8A8A8A", "#9E9E9E", "#C9CAC5", "#FDFDFD"],
+        "usage": "page → panel → trough/pill → grid well → dots → tier text → column headers → inactive model labels → thumb"
+      },
+      "semantic": { "success": "#5FE893", "warning": "#F59F4F", "error": "#E13753", "info": "#9D74F7" },
+      "surface": { "background": "#101010", "card": "#1B1B1B", "elevated": "#2F2F2F" },
+      "contrast_strategy": "layered low-luminance greys separated by 1 step each; all emphasis carried by saturated fills and glow, text stays grey-on-grey until a row activates"
+    },
+    "typography": {
+      "type_scale": {
+        "display": { "size": "n/a", "weight": "n/a", "line_height": "n/a", "tracking": "n/a" },
+        "heading_1": { "size": "n/a", "weight": "n/a", "line_height": "n/a", "tracking": "n/a" },
+        "heading_2": { "size": "n/a", "weight": "n/a", "line_height": "n/a", "tracking": "n/a" },
+        "heading_3": { "size": "16px", "weight": "400", "line_height": "1.2", "tracking": "0" },
+        "body": { "size": "15px", "weight": "590 (semibold model name) / 400 (tier)", "line_height": "1.2", "tracking": "0" },
+        "body_small": { "size": "13px", "weight": "400", "line_height": "1.2", "tracking": "0" },
+        "caption": { "size": "12px", "weight": "400", "line_height": "1.2", "tracking": "0.01em" },
+        "overline": { "size": "11px", "weight": "700", "line_height": "1", "tracking": "0.16em" }
+      },
+      "font_families": { "heading": "system-ui / SF Pro Text", "body": "system-ui / SF Pro Text", "mono": "none observed" },
+      "font_style_notes": "pure SF Pro system stack, antialiased; overline (ULTRA) is bold uppercase heavily letterspaced; model names read one weight heavier than tier words"
+    },
+    "spacing": {
+      "base_unit": "4px",
+      "scale": [4, 6, 8, 10, 14, 18, 24],
+      "content_density": "compact-comfortable — control rows breathe but panel wastes nothing",
+      "section_rhythm": "single surface; grid and lever share one vertical band, input bar sits 10px below panel"
+    },
+    "layout": {
+      "grid_system": "label column + 5 equal stop-columns; lever column appended right",
+      "max_content_width": "640px popover",
+      "columns": "6 + lever",
+      "gutter": "0 (stops butt together; hit areas are whole cells)",
+      "breakpoints": "single-size component; scales down proportionally under 680px",
+      "alignment_tendency": "strict grid for stops; popover center-anchored above trigger pill"
+    },
+    "shape": {
+      "border_radius": { "small": "5px (dots are circles)", "medium": "14px", "large": "18px (panel), 20px (grid well)", "pill": "999px (fills, thumb, trough, input pill, bar)" },
+      "border_usage": "hairline rgba(255,255,255,.06) on panel; violet 1px outline materializes on lever card + panel in ULTRA",
+      "divider_style": "none — grouping via recessed wells (common-region), not lines"
+    },
+    "elevation": {
+      "shadow_style": "layered soft black ambience + recessed inner shadows; glow replaces shadow as the elevation cue in ULTRA",
+      "levels": {
+        "low": "inset 0 1px 3px rgba(0,0,0,.45) on wells/troughs",
+        "medium": "0 3px 8px rgba(0,0,0,.45) + 0 0 0 1px rgba(0,0,0,.1) on thumb/ball",
+        "high": "0 30px 60px -20px rgba(0,0,0,.7), 0 10px 24px rgba(0,0,0,.5) on the popover"
+      },
+      "depth_cues": "recessed wells (neumorphic-dark), glossy sphere speculars, ambient-occlusion halo around thumb, violet aura in ULTRA"
+    },
+    "iconography": {
+      "style": "filled minimal glyphs (lightning), 1.8px stroke outlines (mic, arrows, chevron)",
+      "stroke_weight": "1.8px",
+      "size_scale": ["12px chevron", "16px bolt/mic", "18px send arrow"],
+      "preferred_set": "SF Symbols-like custom SVG"
+    },
+    "motion": {
+      "easing": "cubic-bezier(0.22,1,0.36,1) for surfaces; spring linear() with ~4% overshoot for thumb/fill; gravity ease-in with landing bounce for the lever ball",
+      "duration_scale": { "micro": "120ms (dot ignite, hover)", "normal": "250-280ms (fill growth, thumb, panel open, ball drop)", "macro": "420ms (glow bloom, confetti burst, panel pulse — system feedback after landing)" },
+      "entrance_pattern": "popover scales from the trigger (bottom-center origin) while the active fill pours in from zero",
+      "exit_pattern": "quick 150ms fade-scale; deactivating fills collapse leftward and fade simultaneously",
+      "philosophy": "tactile hardware playfulness — controls behave like physical toys (springs, gravity, ignition), but every user-initiated move settles within 300ms"
+    },
+    "components": {
+      "button_style": "circular icon buttons on #232323/#505050; :active compresses 0.96",
+      "input_style": "pill trigger inside a rounded bar; label = bolt + semibold name + grey tier + chevron",
+      "card_style": "recessed speckled wells sunk into the panel (inset shadow + noise dots)",
+      "navigation_pattern": "none — single anchored popover",
+      "modal_style": "anchored popover, origin-aware growth from trigger, no backdrop dim (context stays visible)",
+      "list_style": "rows ARE sliders: label + 5-dot track, fill capsule to selected stop, white thumb riding the leading edge",
+      "component_notes": "one model active at a time (2D radio: model x effort); dots keep #515151 even over fills; hovered dot ignites in its row color at 1.5x; ULTRA lever = vertical trough + silver track, red ball rests on top; engaging drops ball to bulb position, track above becomes glowing violet stem"
+    }
+  },
+  "design_style": {
+    "aesthetic": {
+      "mood": ["playful", "tactile", "premium", "nocturnal", "gadget-like"],
+      "visual_metaphor": "audio mixing console crossed with a pinball plunger / thermometer",
+      "era_influence": "2024+ dark consumer-AI UI with tasteful skeuomorphic regression (glossy spheres, recessed hardware wells)",
+      "genre": "consumer AI product control surface",
+      "personality_traits": ["confident", "whimsical", "precise", "rewarding"],
+      "adjectives": ["glowy", "springy", "recessed", "speckled", "cockpit-dark"]
+    },
+    "visual_language": {
+      "complexity": "moderate — one dense control cluster, zero chrome elsewhere",
+      "ornamentation": "subtle accents: speckle noise on wells, sparkle particles and confetti dashes reserved for ULTRA",
+      "whitespace_usage": "tight inside the panel, generous void around it",
+      "visual_weight_distribution": "heavy left grid balanced by a single saturated lever right",
+      "focal_strategy": "single hero element — the one saturated fill; ULTRA activation is the deliberate crescendo",
+      "contrast_level": "extreme hue contrast on near-flat luminance base",
+      "texture_usage": "sparse dark speckle dots on wells and trough (hardware plastic feel)"
+    },
+    "composition": {
+      "hierarchy_method": "color weight — the only saturated element is the current choice",
+      "balance_type": "asymmetric: wide grid vs narrow lever",
+      "flow_direction": "left-to-right effort crescendo, ending at the vertical ULTRA exclamation",
+      "grouping_strategy": "common-region wells group stops; lever isolated in its own card",
+      "negative_space_role": "void isolates the popover; inactive rows read as negative space until hovered"
+    },
+    "imagery": {
+      "photo_treatment": "none",
+      "illustration_style": "none — geometry is the illustration",
+      "graphic_elements": "glossy spheres (specular top-left), capsule fills, glowing stem, dash confetti",
+      "pattern_usage": "random speckle dot noise at ~3% white / 25% black",
+      "image_shape": "circles and capsules exclusively"
+    },
+    "interaction_feel": {
+      "feedback_style": "immediate color ignition + spring settle; celebration reserved for ULTRA (glow bloom, confetti, panel pulse)",
+      "hover_behavior": "dots ignite in their row color and scale 1.5x; lever ball shows grab cursor",
+      "transition_personality": "snappy with spring overshoot; gravity for the ball drop",
+      "loading_style": "n/a",
+      "microinteraction_density": "high inside the component, silent outside it"
+    },
+    "brand_voice_in_ui": {
+      "tone": "confident-minimal; nouns only (Low…Pro, ULTRA)",
+      "formality": "casual-premium",
+      "cta_style": "subtle suggestion — the red ball is the CTA by pure appearance",
+      "empty_state_approach": "n/a",
+      "error_tone": "n/a"
+    }
+  },
+  "visual_effects": {
+    "overview": {
+      "effect_intensity": "moderate",
+      "performance_tier": "lightweight",
+      "fallback_strategy": "prefers-reduced-motion: instant state switches, particles hidden, glows become static",
+      "primary_technology": "CSS transitions/keyframes + linear() springs + DOM particle spans seeded by vanilla JS"
+    },
+    "background_effects": {
+      "type": "noise-field",
+      "description": "static sparse speckle dots embossed on wells and trough (dark dots + faint light dots)",
+      "technology": "layered radial-gradient background-image, no JS",
+      "params": { "color_palette": "rgba(0,0,0,.28) + rgba(255,255,255,.025)", "speed": "static", "density": "~1 dot / 500px²", "opacity": "0.25", "blend_mode": "normal" }
+    },
+    "particle_systems": {
+      "enabled": true,
+      "type": "custom — (a) white twinkle sparkles in and just outside ULTRA fills, (b) FOUR dashed zigzag energy rails flanking the thermometer groove (upper pair at 20-42% of card height, lower pair hugging the bulb at 73-91%)",
+      "description": "sparkles: 1.2-3.4px white dots (every 3rd softly blurred) twinkling with slight drift, in and past the active fill's edges; rails: fixed vertical zigzag paths (amplitude ~8% of card width, bend every ~8px, 4 legs ≈ 38px) drawn twice — a very faint full-path ghost plus a bright 4.5/4.5 dash pattern MARCHING continuously down the path (~280ms per period, per-rail 260-320ms + negative delays to desync); dashes crossing bends read as ‹ › corners — frame-by-frame traced from the source video",
+      "technology": "sparkles: absolutely-positioned spans + CSS keyframes; rails: inline SVG polyline pairs (ghost + runner), pathLength=38 keeps dash units ≈ px, runner stroke-dasharray 4.5 4.5 with stroke-dashoffset 9 → 0 linear infinite (one period per lap = seamless march); JS only seeds geometry once",
+      "params": { "count": "11 sparkles per fill, 12 tick groups (17 chevrons with doubles)", "shape": "circle / chevron polyline pointing outward from the groove", "size_range": "1.2-3.4px sparkles; 4x10px chevrons", "movement_pattern": "sparkles twinkle in place; chevrons draw in from inner vertex, hold, then travel out along their own path", "color_behavior": "sparkles white @ 40-95% alpha; chevrons #8D67EC / #A283F4 / #BFA6F9 rotating by nth-child", "interaction": "none", "spawn_area": "fill capsule ±6px vertical overflow; gutters between the ball groove and the lever-card edge" }
+    },
+    "3d_elements": { "enabled": false, "type": "none", "description": "spheres are faked with radial gradients", "technology": "CSS", "params": { "renderer": "n/a", "lighting": "single top-left specular", "camera": "n/a", "materials": "glossy plastic via 3-stop radial gradient", "geometry": "n/a", "post_processing": "n/a", "interaction_model": "n/a" } },
+    "shader_effects": { "enabled": false, "type": "none", "description": "n/a", "technology": "n/a", "params": { "uniforms": "n/a", "vertex_manipulation": "n/a", "fragment_output": "n/a", "noise_type": "n/a", "distortion": "n/a" } },
+    "scroll_effects": {
+      "parallax": { "enabled": false, "layers": "0", "depth_range": "n/a", "speed_curve": "n/a" },
+      "scroll_triggered_animations": { "enabled": false, "trigger_points": "n/a", "animation_type": "n/a", "scrub_behavior": "n/a" },
+      "scroll_morphing": { "enabled": false, "description": "n/a" }
+    },
+    "text_effects": {
+      "type": "blurred text swap",
+      "description": "input-bar label exits up with 2px blur and the new model+tier enters from below on every committed change; instant (no animation) while dragging across stops",
+      "technology": "CSS transition, 3-phase class choreography",
+      "params": { "split_strategy": "whole label", "animation_per_unit": "translateY 4px + blur 2px + fade", "stagger": "none", "effect_style": "soft optical swap" }
+    },
+    "cursor_effects": { "enabled": false, "type": "none", "description": "native cursors only: pointer on cells, grab/grabbing on ball", "params": { "shape": "n/a", "size": "n/a", "blend_mode": "n/a", "trail": "n/a", "interaction_zone": "n/a" } },
+    "image_effects": { "type": "none", "description": "n/a", "technology": "n/a", "params": { "filter_pipeline": "n/a", "hover_transform": "n/a", "reveal_animation": "n/a", "distortion_type": "n/a" } },
+    "glassmorphism_neumorphism": {
+      "enabled": true,
+      "style": "neumorphic-dark",
+      "params": { "blur_radius": "0 (no backdrop blur)", "transparency": "opaque surfaces", "border_treatment": "hairline light-alpha; violet outline materializes in ULTRA", "shadow_type": "recessed inset wells + layered black drop on popover + violet glow aura in ULTRA", "light_source_angle": "top-left (speculars at 30%/28%)" }
+    },
+    "canvas_drawings": { "enabled": false, "type": "none", "description": "n/a", "technology": "n/a", "params": { "draw_method": "n/a", "animation_loop": "n/a", "color_scheme": "n/a", "responsiveness": "n/a", "interaction": "n/a" } },
+    "svg_animations": { "enabled": true, "type": "path-draw", "description": "four dashed zigzag rails around the thermometer: faint static full-path ghosts with a bright dash pattern marching continuously along each path while ULTRA is engaged; trigger chevron icon flips via CSS transform", "params": { "animation_method": "CSS keyframes on stroke-dashoffset, linear infinite (continuous flow, ~280ms per dash period)", "path_morphing": "none", "stroke_animation": "runner dasharray 4.5 4.5 on pathLength 38, dashoffset 9 → 0 per lap; 1.2px strokes, round caps/joins", "filter_effects": "none" } },
+    "composite_notes": "Thermometer anatomy is TWO nested capsules: the speckled lever card, and a recessed near-black groove (~ball width - 4px) sunk into it — ball, silver track, and stem all travel inside the groove; the ULTRA outline is a crisp 1px violet stroke around the card, not a haze. ULTRA activation choreography (the crescendo): (1) t0 ball releases past 55% travel or is clicked — instantly recolors red→violet and accelerates down under gravity easing ~220ms, the silver track above it progressively igniting into a glowing violet stem; (2) on landing the ball swells subtly (~1.06x) into the bulb, glow blooms over ~420ms with a 40ms breath; (3) confetti dashes burst radially with 0-160ms stagger, ULTRA overline ignites violet with text-shadow, lever card and panel gain violet 1px outline + aura, and the panel does one 1.014 scale pulse ~300ms; (4) active row fill cross-fades to violet with white sparkles twinkling; sparkles/confetti keep twinkling ambiently while engaged. Deactivation reverses in ~200ms without celebration: ball springs back to top recoloring to red, stem drains, sparkles/outline/aura fade, row fill returns to its model color. Row switching: outgoing fill collapses leftward + fades in 150ms ease-in while incoming fill springs out to its stop in 260ms — both rows never show full fills simultaneously. Popover open pours the active fill from zero after the 250ms bottom-center scale-in."
+  }
+}

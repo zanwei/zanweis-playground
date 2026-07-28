@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  swift:
+    name: SwiftUI library
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with warnings as errors
+        run: swift build -Xswiftc -warnings-as-errors
+      - name: Run package tests
+        run: swift test
+      - name: Lint Swift sources
+        run: xcrun swift-format lint --recursive ChatGPTModelSelector ChatGPTModelSelectorDemo ChatGPTModelSelectorTests
+      - name: Generate and build the iOS demo
+        run: |
+          brew install xcodegen
+          xcodegen generate
+          xcodebuild \
+            -project ChatGPTModelSelector.xcodeproj \
+            -scheme ChatGPTModelSelectorDemo \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+  javascript:
+    name: JavaScript component
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check JavaScript syntax
+        run: node --check JavaScript/chatgpt-model-selector.js
+      - name: Verify demo entry point
+        run: grep -q 'chatgpt-model-selector.js' index.html

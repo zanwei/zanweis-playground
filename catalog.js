@@ -1,0 +1,129 @@
+/**
+ * The component registry. Each entry embeds the repo's own demo page:
+ * `viewport` is the fixed design size the preview iframe renders at before
+ * being scaled to fit its card; `prime` optionally nudges the demo into a
+ * presentable resting state (same-origin, so we can reach into the document).
+ */
+'use strict';
+
+const CATALOG = [
+  {
+    slug: 'status-indicator',
+    repo: 'status-indicator-web-component',
+    title: 'Status Indicator',
+    tag: 'status-indicator',
+    category: 'status',
+    bg: '#ffffff',
+    dark: false,
+    viewport: [360, 225],
+    aspect: '360 / 225',
+  },
+  {
+    slug: 'ball-model-picker',
+    repo: 'ball-model-picker',
+    title: 'Ball Model Picker',
+    tag: 'ball-model-picker',
+    category: 'pickers',
+    bg: '#0D0F0C',
+    dark: true,
+    viewport: [560, 620],
+    aspect: '560 / 620',
+  },
+  {
+    slug: 'dialog',
+    repo: 'dialog-web-component',
+    title: 'Delete Confirm Dialog',
+    tag: 'delete-confirm-dialog',
+    category: 'surfaces',
+    bg: '#ffffff',
+    dark: false,
+    viewport: [520, 340],
+    aspect: '520 / 340',
+    prime(doc) {
+      // The demo-only Reset pill is position:fixed; keep it out of the card.
+      const el = doc.querySelector('delete-confirm-dialog');
+      el?.removeAttribute('show-reset');
+      // Under 464px-tall viewports the demo sets `dialog { overflow: auto }`
+      // (scroll room for short screens), which clips the card's shadow. The
+      // preview is static and everything fits — keep the shadow visible.
+      if (el?.shadowRoot) {
+        const fix = doc.createElement('style');
+        fix.textContent = 'dialog { overflow: visible !important; }';
+        el.shadowRoot.appendChild(fix);
+      }
+    },
+  },
+  {
+    slug: 'claude-model-selector',
+    repo: 'claude-model-selector',
+    title: 'Claude Model Selector',
+    tag: 'claude-model-selector',
+    category: 'pickers',
+    bg: '#fdfdfc',
+    dark: false,
+    viewport: [520, 430],
+    aspect: '520 / 430',
+  },
+  {
+    slug: 'liquid-connector',
+    repo: 'liquid-connector-web-component',
+    title: 'Liquid Connector',
+    tag: 'liquid-connector',
+    category: 'surfaces',
+    bg: '#f2f2f2',
+    dark: false,
+    viewport: [960, 580],
+    aspect: '960 / 580',
+    previewCSS: '.controls { display: none !important; }',
+  },
+  {
+    slug: 'model-picker',
+    repo: 'model-picker',
+    title: 'Model Picker',
+    tag: 'model-picker',
+    category: 'pickers',
+    bg: '#0F0F0F',
+    dark: true,
+    viewport: [620, 500],
+    aspect: '620 / 500',
+    prime(doc) {
+      doc.querySelector('model-picker')?.setAttribute('open', '');
+    },
+  },
+  {
+    slug: 'table-of-content',
+    repo: 'table-of-content-component',
+    title: 'Table of Contents',
+    tag: 'table-of-content',
+    category: 'navigation',
+    bg: '#ffffff',
+    dark: false,
+    viewport: [640, 640],
+    aspect: '640 / 640',
+    prime(doc) {
+      doc.querySelector('table-of-content')?.setAttribute('open', '');
+    },
+  },
+  {
+    slug: 'chatgpt-model-selector',
+    repo: 'chatgpt-model-selector',
+    title: 'ChatGPT Model Selector',
+    tag: 'chatgpt-model-selector',
+    category: 'pickers',
+    bg: '#ffffff',
+    dark: false,
+    viewport: [520, 400],
+    aspect: '520 / 400',
+    prime(doc) {
+      // No `open` attribute — click the trigger pill through the shadow root.
+      const el = doc.querySelector('chatgpt-model-selector');
+      el?.shadowRoot?.querySelector('.pill')?.click();
+    },
+  },
+];
+
+for (const item of CATALOG) {
+  item.demo = `components/${item.repo}/index.html`;
+  item.github = `https://github.com/zanwei/${item.repo}`;
+}
+

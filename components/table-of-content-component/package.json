@@ -1,0 +1,65 @@
+{
+  "name": "table-of-content-component",
+  "version": "0.1.0",
+  "description": "A dependency-free Web Component for a pointer-driven vertical table of content preview.",
+  "type": "module",
+  "main": "./index.js",
+  "module": "./index.js",
+  "browser": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "browser": "./index.js",
+      "import": "./index.js",
+      "default": "./index.js"
+    },
+    "./table-of-content.js": "./table-of-content.js",
+    "./table-of-content-model.js": "./table-of-content-model.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "table-of-content.js",
+    "table-of-content-model.js",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "sideEffects": [
+    "./index.js",
+    "./table-of-content.js",
+    "./table-of-content-model.js"
+  ],
+  "scripts": {
+    "dev": "python3 -m http.server 4173",
+    "test": "node --test",
+    "check": "node --check index.js && node --check table-of-content-model.js && node --check table-of-content.js && npm test && npm pack --dry-run --cache ./.npm-cache",
+    "pack:release": "npm pack --cache ./.npm-cache",
+    "prepublishOnly": "npm run check"
+  },
+  "keywords": [
+    "animation",
+    "microinteraction",
+    "navigation",
+    "table-of-contents",
+    "ui",
+    "web-component"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zanwei/table-of-content-component.git"
+  },
+  "homepage": "https://github.com/zanwei/table-of-content-component#readme",
+  "bugs": {
+    "url": "https://github.com/zanwei/table-of-content-component/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

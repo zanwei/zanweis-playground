@@ -1,0 +1,21 @@
+# Dependencies and package artifacts
+node_modules/
+.npm-cache/
+coverage/
+dist/
+*.tgz
+
+# Operating-system files
+.DS_Store
+
+# Local browser and visual-QA artifacts
+.playwright-cli/
+output/
+
+# Local agent instructions and reference analysis
+.agents/
+.codex/
+CLAUDE.md
+UI_REVIEW.md
+design-dna.json
+reference/

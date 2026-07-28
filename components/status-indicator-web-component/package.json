@@ -1,0 +1,16 @@
+{
+  "name": "status-indicator",
+  "version": "0.1.0",
+  "description": "A dependency-free status indicator Web Component with spring-driven dot-to-pill transitions.",
+  "type": "module",
+  "exports": "./status-indicator.js",
+  "files": [
+    "status-indicator.js"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zanwei/status-indicator-web-component.git"
+  },
+  "homepage": "https://zanwei.github.io/status-indicator-web-component/",
+  "license": "MIT"
+}

@@ -1,0 +1,1318 @@
+/* zanwei's playground
+   Layout after recent.design: sticky sidebar, filter pills, column masonry,
+   shared cursors. One accent, one radius family, system type. */
+
+:root {
+  /* motion tokens (transitions.dev scale) */
+  --duration-stagger: 40ms;
+  --duration-quick: 150ms;
+  --duration-fast: 250ms;
+  --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1); /* strong ease-out for UI */
+  --distance-base: 8px;
+  --blur-small: 2px;
+  --duration-very-slow: 500ms; /* emphasis moments */
+  --duration-reveal: 900ms; /* the once-per-visit boot reveal, unhurried */
+
+  /* number pop-in (transitions.dev) */
+  --digit-dur: 500ms;
+  --digit-distance: 8px;
+  --digit-stagger: 70ms;
+  --digit-blur: 2px;
+  --digit-ease: cubic-bezier(0.34, 1.45, 0.64, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1); /* iOS-like drawer pull */
+  --boot-beat: 500ms; /* one expression switch per beat on the loader */
+
+  /* color */
+  --bg: #ffffff;
+  --ink: #111114;
+  --ink-2: #6f6f76;
+  --ink-3: #a6a6ad;
+  --border: rgba(17, 17, 20, 0.08);
+  --surface: #f4f4f5;
+  --accent: #f5560c;
+
+  /* presence palette — functional, one hue per visitor */
+  --presence-orange: #f5560c;
+  --presence-violet: #8c5bf0;
+  --presence-green: #0fa47a;
+  --presence-pink: #db3a80;
+  --presence-blue: #2b7fd9;
+  --presence-amber: #c99700;
+
+  --radius: 10px;
+  --radius-pill: 999px;
+  --chip-h: 28px; /* one height for every topbar chip */
+
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+  scrollbar-gutter: stable;
+  /* The page never scrolls sideways by design; clip stray overflow so a
+     horizontal scrollbar track can't appear as a gray band. */
+  overflow-x: clip;
+  /* Paint the canvas itself: overscroll and pinch-zoom show page white,
+     never the browser's default gray. */
+  background: var(--bg);
+}
+
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-synthesis: none; /* no faux bold/italic */
+}
+
+::selection {
+  background: rgba(245, 86, 12, 0.16); /* the one accent, quietly */
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+}
+
+/* Focus rings are intentionally disabled site-wide (owner's call). */
+:focus,
+:focus-visible {
+  outline: none;
+}
+
+/* ------------------------------------------------------------ boot loader */
+
+/* Seen once per load: a 3×3 grid of pixel faces ripples through expressions,
+   settles on a smile, then the sheet lifts away and the gallery enters.
+   White-theme port of demo.gif — faces are dark (currentColor) on the page. */
+
+.boot {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+  color: var(--ink);
+  transition: transform var(--duration-reveal) var(--ease-smooth-out);
+}
+
+/* Dim overlay riding on the sheet: 0 -> 100 as the sheet recedes. */
+.boot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(17, 17, 20, 0.32);
+  opacity: 0;
+  transition: opacity var(--duration-reveal) var(--ease-smooth-out);
+  pointer-events: none;
+}
+
+/* The sheet eases into a center scale-down, pressed back into depth. */
+.boot[data-done] {
+  transform: scale(0.94);
+  pointer-events: none;
+}
+
+.boot[data-done]::after {
+  opacity: 1;
+}
+
+.boot[data-hidden] {
+  display: none;
+}
+
+/* A brand-click refresh skips the intro — the sheet never even paints. */
+html.boot-skip .boot {
+  display: none;
+}
+
+/* The page waits below the viewport, then pulls up like a drawer over the
+   receded, dimmed loader. The drawer surface is the full-bleed .sheet — in
+   the gif the rising page spans the whole window with a hard edge, no
+   shadow, no side gutters. */
+.sheet {
+  position: relative;
+  z-index: 2;
+  background: var(--bg);
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+/* The translated sheet stays IN FLOW, so during the intro the document would
+   otherwise be twice the viewport tall — a phantom scroll area the browser
+   can restore a scroll offset into (leaving the header stranded below the
+   fold). Lock scrolling for the duration; scrollbar-gutter: stable above
+   means locking and unlocking shifts nothing. */
+html.booting,
+html.revealing {
+  overflow: hidden;
+}
+
+html.booting .sheet,
+html.revealing .sheet {
+  z-index: 1001;
+}
+
+html.booting .sheet {
+  /* dvh, matching the sheet's own min-height: a window resize (or a mobile
+     URL bar) must not leave the start and end of the drawer disagreeing. */
+  transform: translateY(100vh);
+  transform: translateY(100dvh);
+}
+
+html.revealing .sheet {
+  transform: translateY(0);
+  transition: transform var(--duration-reveal) var(--ease-drawer);
+}
+
+.boot-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  color: var(--ink-2); /* constant — the faces never change color */
+  transition: transform var(--duration-quick) var(--ease-out);
+}
+
+.boot-grid[data-settled] {
+  transform: scale(1.06); /* one subtle pop on landing */
+}
+
+.boot-cell {
+  display: block;
+  width: 22px;
+  height: 22px;
+}
+
+.boot-cell svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: currentColor;
+}
+
+/* Card entrances wait through boot, then cascade DURING the drawer rise —
+   in the gif the content starts appearing while the page is still moving. */
+.booting .card.enter {
+  animation-play-state: paused;
+}
+
+/* ---------------------------------------------------------------- shell */
+
+.shell {
+  /* Full-bleed: the masonry's fluid columns absorb whatever width the
+     window offers, so wide displays get more columns, not gutters. */
+  padding: 0 max(16px, env(safe-area-inset-right)) 16px max(16px, env(safe-area-inset-left));
+}
+
+/* --------------------------------------------------------------- topbar */
+
+/* The bar owns the only fixed chrome: wordmark left, live count right.
+   It sticks so the presence signal stays visible; a hairline fades in
+   once content actually passes underneath. */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 400;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: calc(14px + env(safe-area-inset-top)) 0 12px;
+  margin-bottom: 8px;
+  background: var(--bg);
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--duration-quick) ease;
+}
+
+.topbar.is-stuck {
+  border-bottom-color: var(--border);
+}
+
+.brand {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  color: var(--ink);
+  transition: transform var(--duration-quick) var(--ease-out);
+}
+
+/* Fitts: the visible mark is 28px; the hit target is 36px. */
+.brand::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+}
+
+.brand:active {
+  transform: scale(0.97);
+}
+
+.brand-face {
+  width: 24px;
+  height: 24px;
+  fill: currentColor; /* the bare dark glyph is the wordmark */
+}
+
+/* Status chip: bordered, not filled — real state, quiet treatment. Height
+   matches the wordmark so the topbar reads as one 28px row. */
+.online-wrap {
+  position: relative;
+}
+
+.online {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--chip-h);
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  font-size: 13px;
+  line-height: 1;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  transition:
+    background-color var(--duration-quick) ease,
+    color var(--duration-quick) ease,
+    transform var(--duration-quick) var(--ease-out);
+}
+
+/* The count sits tight against its label — one gap, no stray whitespace. */
+.online .t-digit-group {
+  margin-right: -2px;
+}
+
+.online-label {
+  color: inherit;
+}
+
+.online:hover {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.online:active {
+  transform: scale(0.97);
+}
+
+/* The who's-here globe, anchored under the trigger like a menu. */
+.globe-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 450;
+  padding: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow:
+    0 0 0 1px rgba(17, 17, 20, 0.03),
+    0 8px 20px rgba(17, 17, 20, 0.08),
+    0 24px 64px rgba(17, 17, 20, 0.14);
+  transform-origin: top right;
+  opacity: 0;
+  transform: scale(0.97);
+  transition:
+    opacity var(--duration-fast) var(--ease-smooth-out),
+    transform var(--duration-fast) var(--ease-smooth-out);
+}
+
+.globe-pop.is-open {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.globe-pop.is-closing {
+  opacity: 0;
+  transform: scale(0.99);
+  transition-duration: var(--duration-quick);
+  pointer-events: none;
+}
+
+.globe-wrap {
+  position: relative;
+  width: 280px;
+  height: 280px;
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+.globe-wrap canvas {
+  touch-action: none; /* horizontal drags rotate the globe, never scroll */
+}
+
+/* One label only — a white tooltip over the viewer's marker. */
+.globe-chip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, calc(-100% - 10px));
+  padding: 5px 11px;
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  box-shadow:
+    0 0 0 1px rgba(17, 17, 20, 0.08),
+    0 2px 6px rgba(17, 17, 20, 0.08),
+    0 8px 20px rgba(17, 17, 20, 0.12);
+}
+
+.online-dot {
+  position: relative;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* With company on the page the dot breathes — a slow opacity pulse only,
+   so a permanently-visible element never jitters the layout or pulls focus.
+   Alone on the page it stays perfectly still: nothing to signal. */
+@keyframes online-breathe {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.online[data-company] .online-dot {
+  animation: online-breathe 2.4s ease-in-out infinite;
+}
+
+/* Number pop-in: each digit re-enters with a blurred rise when the count
+   changes (transitions.dev). */
+@keyframes t-digit-pop-in {
+  0% {
+    transform: translateY(var(--digit-distance));
+    opacity: 0;
+    filter: blur(var(--digit-blur));
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+.t-digit-group {
+  display: inline-flex;
+  align-items: baseline;
+}
+
+.t-digit {
+  display: inline-block;
+}
+
+.t-digit-group.is-animating .t-digit {
+  animation: t-digit-pop-in var(--digit-dur) var(--digit-ease) both;
+  will-change: transform, opacity, filter;
+}
+
+.t-digit-group.is-animating .t-digit[data-stagger='1'] {
+  animation-delay: var(--digit-stagger);
+}
+
+.t-digit-group.is-animating .t-digit[data-stagger='2'] {
+  animation-delay: calc(var(--digit-stagger) * 2);
+}
+
+/* ----------------------------------------------------------------- main */
+
+.main {
+  min-width: 0;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* -------------------------------------------------------------- masonry */
+
+/* Fluid columns: the browser fits as many 21rem columns as the width
+   allows (4 at the 1680px cap), so every width between breakpoints is
+   handled instead of only the breakpoints themselves. */
+
+.masonry {
+  columns: 21rem;
+  column-gap: 12px;
+}
+
+.card {
+  break-inside: avoid;
+  margin: 0 0 12px;
+}
+
+.card[hidden] {
+  display: none;
+}
+
+/* one-shot entry stagger, set per-card via --enter-delay */
+@keyframes card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(var(--distance-base));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.card.enter {
+  animation: card-enter var(--duration-fast) var(--ease-out) both;
+  animation-delay: var(--enter-delay, 0ms);
+}
+
+.card-media {
+  position: relative;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  /* per-card background set inline to match the demo page */
+  contain: layout paint; /* a repainting demo never invalidates neighbors */
+  transition: transform var(--duration-quick) var(--ease-out);
+}
+
+/* Press feedback on the whole card — barely-there scale for a large surface */
+.card-media:has(.card-hit:active) {
+  transform: scale(0.99);
+}
+
+.card-frame {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.card-frame iframe {
+  border: 0;
+  display: block;
+  transform-origin: 0 0;
+  /* width/height/scale set by app.js from the design viewport */
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.card-frame iframe.is-loaded {
+  opacity: 1;
+}
+
+.card-hit {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  border-radius: inherit;
+}
+
+
+/* hover chrome: label chip + open arrow, opacity only */
+
+.card-label,
+.card-open {
+  position: absolute;
+  bottom: 10px;
+  opacity: 0;
+  transform: translateY(4px);
+  transition:
+    opacity var(--duration-quick) var(--ease-out),
+    transform var(--duration-quick) var(--ease-out);
+  pointer-events: none;
+}
+
+.card-label {
+  left: 10px;
+  max-width: calc(100% - 64px);
+  padding: 5px 10px;
+  border-radius: var(--radius-pill);
+  background: rgba(17, 17, 20, 0.78);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card-open {
+  right: 10px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid var(--border);
+  color: var(--ink);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .card-media:hover .card-label,
+  .card-media:hover .card-open {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+
+@media (hover: none) {
+  .card-label,
+  .card-open {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* remote visitors on a card */
+
+.card-visitors {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.card-visitors span {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 2px rgba(17, 17, 20, 0.18);
+}
+
+/* ----------------------------------------------------------- playground */
+
+.playground {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.playground[hidden] {
+  display: none;
+}
+
+.playground-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(17, 17, 20, 0.42);
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-smooth-out);
+}
+
+.playground-window {
+  position: relative;
+  width: min(1120px, 100%);
+  height: min(780px, calc(100vh - 40px));
+  height: min(780px, calc(100dvh - 40px));
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  /* layered, ink-tinted: contact line, mid falloff, ambient */
+  box-shadow:
+    0 0 0 1px rgba(17, 17, 20, 0.03),
+    0 8px 20px rgba(17, 17, 20, 0.08),
+    0 24px 64px rgba(17, 17, 20, 0.16);
+  overflow: hidden;
+  opacity: 0;
+  transform: scale(0.96) translateY(var(--distance-base));
+  filter: blur(var(--blur-small));
+  will-change: transform; /* the FLIP flight starts the frame it opens */
+  transition:
+    opacity var(--duration-fast) var(--ease-smooth-out),
+    transform var(--duration-fast) var(--ease-smooth-out),
+    filter var(--duration-fast) var(--ease-smooth-out);
+}
+
+.playground.is-open .playground-backdrop {
+  opacity: 1;
+}
+
+.playground.is-open .playground-window {
+  opacity: 1;
+  transform: none;
+  /* none, not blur(0): a zero-radius blur still forces a render surface,
+     and it would ride along for the whole time the modal is open. */
+  filter: none;
+}
+
+/* iOS-style close: the window visibly flies home over the full fast
+   duration, staying opaque for the first stretch and fading only near the
+   end; the dim clears in sync. A closing modal must not eat clicks. */
+.playground.is-closing {
+  pointer-events: none;
+}
+
+.playground.is-closing .playground-backdrop {
+  opacity: 0;
+  transition-duration: var(--duration-fast);
+}
+
+.playground.is-closing .playground-window {
+  opacity: 0;
+  transform: scale(0.97);
+  /* no filter mid-flight: even blur(0) can cost a compositing pass */
+  filter: none;
+  transition:
+    transform var(--duration-fast) var(--ease-smooth-out),
+    opacity var(--duration-quick) var(--ease-out) 120ms;
+}
+
+/* During the matched-geometry flight only a solid surface moves: chips are
+   hidden and pop in on landing; the iframe fades in on its own load. */
+
+/* The mask must be instant in both directions — mid-flight content is
+   exactly what it exists to hide. */
+.playground-window.is-morphing .playground-head,
+.playground-window.is-morphing .playground-frame {
+  opacity: 0;
+  transition: none;
+}
+
+.playground-window.is-morphing .playground-head {
+  transform: translateY(4px);
+}
+
+/* Immersive header: controls float over the demo itself — same chip
+   language as the card hover, readable on light and dark demos alike. */
+
+.playground-head {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 12px 12px 14px;
+  pointer-events: none;
+  transition:
+    opacity var(--duration-quick) var(--ease-out),
+    transform var(--duration-quick) var(--ease-out);
+}
+
+.playground-title {
+  margin: 0;
+  max-width: 60%;
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  background: rgba(17, 17, 20, 0.78);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.playground-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: auto;
+}
+
+.playground-source {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--radius-pill);
+  font-size: 13px;
+  background: rgba(17, 17, 20, 0.78);
+  color: #fff;
+  transition:
+    background-color var(--duration-quick) ease,
+    transform var(--duration-quick) var(--ease-out);
+}
+
+.playground-source:hover {
+  background: rgba(17, 17, 20, 0.92);
+}
+
+.playground-source:active {
+  transform: scale(0.97);
+}
+
+.playground-close {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: rgba(17, 17, 20, 0.78);
+  color: #fff;
+  transition:
+    background-color var(--duration-quick) ease,
+    transform var(--duration-quick) var(--ease-out);
+}
+
+/* Fitts: 30px visuals, 38px hit targets. */
+.playground-source::before,
+.playground-close::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+}
+
+.playground-close:hover {
+  background: rgba(17, 17, 20, 0.92);
+}
+
+.playground-close:active {
+  transform: scale(0.97);
+}
+
+.playground-body {
+  position: absolute;
+  inset: 0;
+}
+
+.playground-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-smooth-out);
+}
+
+.playground-frame.is-ready {
+  opacity: 1;
+}
+
+/* ------------------------------------------------------------- fountain */
+
+/* Hold-L spray layer: pooled sprites, transform/opacity only, under cursors. */
+.fountain-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 850;
+  pointer-events: none;
+  overflow: clip;
+}
+
+.fountain-p {
+  position: absolute;
+  top: -14.5px; /* sprite center on the emit point */
+  left: -14.5px;
+  visibility: hidden;
+  will-change: transform, opacity;
+}
+
+.fountain-p img {
+  display: block;
+  width: 29px;
+  height: 29px;
+}
+
+/* ------------------------------------------------------------- presence */
+
+.presence-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+/* Two layers, as on recent.design: the outer div carries position
+   (translate3d), the inner one animates scale from the arrow tip. */
+
+.presence-cursor {
+  position: absolute;
+  top: 0;
+  left: 0;
+  will-change: transform;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.25));
+}
+
+.presence-cursor-inner {
+  transform-origin: 4px 3px; /* the arrow tip */
+  opacity: 0;
+  transform: scale(0.6);
+  transition:
+    opacity var(--duration-quick) var(--ease-out),
+    transform var(--duration-quick) var(--ease-out);
+}
+
+.presence-cursor.is-in .presence-cursor-inner {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.presence-cursor.is-leaving .presence-cursor-inner {
+  opacity: 0;
+  transform: scale(0.6);
+  transition-duration: var(--duration-quick);
+}
+
+.presence-cursor svg {
+  display: block;
+  transform: translate(-4px, -3px); /* hotspot on the arrow tip */
+}
+
+/* Bullet chat: capsules cross the screen at constant speed (linear — the
+   correct easing for steady motion). Hover pauses the flight so the Close
+   button holds still under the pointer. */
+
+.bullet-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 800;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+@keyframes bullet-fly {
+  to {
+    transform: translateX(var(--fly));
+  }
+}
+
+.bullet {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(420px, 70vw);
+  padding: 6px 6px 6px 13px;
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  color: var(--ink); /* others' messages: default ink */
+  font-size: 13px;
+  box-shadow:
+    0 0 0 1px rgba(17, 17, 20, 0.07),
+    0 2px 6px rgba(17, 17, 20, 0.06),
+    0 8px 20px rgba(17, 17, 20, 0.1);
+  pointer-events: auto;
+  will-change: transform;
+  animation: bullet-fly 8s linear forwards; /* duration set per bullet in JS */
+}
+
+/* your own messages read back in blue */
+.bullet.is-own span {
+  color: var(--presence-blue);
+}
+
+.bullet span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bullet button {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(17, 17, 20, 0.07);
+  color: var(--ink-2);
+  transition:
+    background-color var(--duration-quick) ease,
+    color var(--duration-quick) ease;
+}
+
+.bullet button:hover {
+  background: rgba(17, 17, 20, 0.14);
+  color: var(--ink);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .bullet:hover {
+    animation-play-state: paused;
+  }
+}
+
+.bullet.is-out {
+  animation-play-state: paused;
+  opacity: 0;
+  scale: 0.92;
+  transition:
+    opacity var(--duration-quick) var(--ease-out),
+    scale var(--duration-quick) var(--ease-out);
+}
+
+/* Bottom dock: the white input pill plus its display toggle, rising together
+   like a toast. Depth comes from layered shadows, not hard borders. */
+
+.chat-dock {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  z-index: 950;
+  translate: -50% 0;
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  opacity: 0;
+  transform: translateY(12px);
+  transition:
+    opacity var(--duration-fast) var(--ease-smooth-out),
+    transform var(--duration-fast) var(--ease-smooth-out);
+}
+
+.chat-dock.is-on {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Status toast above the dock — sits over the composer's own gap so it never
+   pushes the dock. Rises in, leaves without moving (exits stay softer). */
+.chat-toast {
+  position: fixed;
+  bottom: 80px;
+  left: 50%;
+  z-index: 951;
+  translate: -50% 0;
+  max-width: min(420px, 84vw);
+  padding: 7px 14px;
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 12.5px;
+  text-align: center;
+  text-wrap: balance;
+  box-shadow:
+    0 0 0 1px rgba(17, 17, 20, 0.07),
+    0 2px 6px rgba(17, 17, 20, 0.06),
+    0 10px 28px rgba(17, 17, 20, 0.14);
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(8px);
+  transition:
+    opacity var(--duration-fast) var(--ease-smooth-out),
+    transform var(--duration-fast) var(--ease-smooth-out);
+}
+
+.chat-toast.is-on {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Bullet-storm overflow: a quiet counter instead of a wall of capsules. */
+.bullet-overflow {
+  position: fixed;
+  right: 16px;
+  bottom: 24px;
+  z-index: 799; /* under the bullets it summarizes */
+  padding: 5px 11px;
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  box-shadow:
+    0 0 0 1px rgba(17, 17, 20, 0.07),
+    0 2px 6px rgba(17, 17, 20, 0.08);
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(6px);
+  transition:
+    opacity var(--duration-quick) var(--ease-out),
+    transform var(--duration-quick) var(--ease-out);
+}
+
+.bullet-overflow.is-on {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.chat-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 4px 4px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  box-shadow:
+    0 0 0 1px rgba(17, 17, 20, 0.07),
+    0 2px 6px rgba(17, 17, 20, 0.06),
+    0 12px 32px rgba(17, 17, 20, 0.14);
+  transition: box-shadow var(--duration-quick) ease;
+}
+
+
+.chat-bar input {
+  width: min(360px, 70vw);
+  padding: 8px 10px;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  caret-color: var(--accent);
+  font: inherit;
+  outline: none;
+}
+
+.chat-bar input::placeholder {
+  color: var(--ink-3);
+}
+
+/* Send: a filled circle, concentric with the pill (both fully rounded).
+   Press uses the canonical 0.96. */
+.chat-send {
+  position: relative;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--ink);
+  color: #fff;
+  transition:
+    background-color var(--duration-quick) ease,
+    color var(--duration-quick) ease,
+    transform var(--duration-quick) var(--ease-out);
+}
+
+.chat-send:active {
+  transform: scale(0.96);
+}
+
+.chat-send:disabled {
+  background: var(--surface);
+  color: var(--ink-3);
+}
+
+/* 44px hit target, extended away from the input so hit areas never overlap */
+.chat-send::before {
+  content: '';
+  position: absolute;
+  inset: -4px -4px -4px 0;
+}
+
+.topbar-tools {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+/* Topbar keyboard hint: a quiet chip that also opens the chat. */
+
+.chat-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: var(--chip-h);
+  padding: 0 11px 0 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  font-size: 13px;
+  line-height: 1;
+  color: var(--ink-2);
+  transition:
+    background-color var(--duration-quick) ease,
+    color var(--duration-quick) ease,
+    transform var(--duration-quick) var(--ease-out);
+}
+
+.chat-hint:hover {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.chat-hint:active {
+  transform: scale(0.97);
+}
+
+/* Keycap: concentric with the pill (pill h28 r14, 5px inset -> r9 would be
+   concentric; the cap is 18px so radius 6 reads square-ish like a real key) */
+.chat-hint kbd {
+  display: grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--ink);
+}
+
+/* The display toggle rides in the dock, styled as its own white pill. */
+
+.bullet-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 13px;
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  box-shadow:
+    0 0 0 1px rgba(17, 17, 20, 0.07),
+    0 2px 6px rgba(17, 17, 20, 0.06),
+    0 12px 32px rgba(17, 17, 20, 0.14);
+  font-size: 13px;
+  color: var(--ink-2);
+  transition: color var(--duration-quick) ease;
+}
+
+.bullet-toggle:hover {
+  color: var(--ink);
+}
+
+.bullet-toggle .switch {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  transition: background-color var(--duration-quick) ease;
+}
+
+.bullet-toggle .knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid var(--border);
+  transition: translate var(--duration-quick) var(--ease-out);
+}
+
+.bullet-toggle[aria-checked='true'] .switch {
+  background: var(--ink);
+  border-color: var(--ink);
+}
+
+.bullet-toggle[aria-checked='true'] .knob {
+  translate: 14px 0;
+  border-color: transparent;
+}
+
+/* ----------------------------------------------------------- responsive */
+
+/* On phones the playground takes the whole screen: a 20px matte around a
+   scaled demo helps nobody at this size. */
+@media (max-width: 640px) {
+  .playground {
+    padding: 0;
+  }
+
+  .playground-window {
+    width: 100%;
+    height: 100vh;
+    height: 100dvh;
+    border-radius: 0;
+    border: 0;
+  }
+
+  .playground-head {
+    padding: calc(10px + env(safe-area-inset-top)) 10px 10px 14px;
+    gap: 8px;
+  }
+}
+
+/* ------------------------------------------------------- reduced motion */
+
+@media (prefers-reduced-motion: reduce) {
+  .card.enter {
+    animation-duration: 1ms;
+    animation-delay: 0ms;
+  }
+
+  .online-dot {
+    animation: none;
+  }
+
+  .t-digit-group.is-animating .t-digit {
+    animation: none;
+  }
+
+  /* The playground animates via TRANSITIONS — zeroing durations is what
+     actually honors the preference (animation: none here was a no-op, and
+     the base filter transition would otherwise run a 250ms animated blur
+     for exactly the users who asked for less motion). */
+  .playground-backdrop,
+  .playground-window,
+  .playground-frame,
+  .playground-head,
+  .playground-source,
+  .playground-close,
+  .card-label,
+  .card-open,
+  .card-media,
+  .card-frame iframe,
+  .chat-toast,
+  .brand,
+  .topbar,
+  .boot,
+  .boot::after,
+  .boot-grid,
+  .presence-cursor-inner,
+  .chat-dock,
+  .bullet.is-out,
+  .bullet-toggle .knob,
+  .chat-hint,
+  .globe-pop,
+  .online {
+    transition-duration: 1ms;
+  }
+
+  .chat-dock {
+    transform: none;
+  }
+
+  html.booting .sheet {
+    transform: none;
+  }
+
+  html.revealing .sheet {
+    transition-duration: 1ms;
+  }
+
+  .playground-window {
+    transform: none;
+  }
+
+  .playground.is-closing .playground-window {
+    transform: none;
+  }
+}

@@ -1,0 +1,16 @@
+# Dependencies and package artifacts
+node_modules/
+.npm-cache/
+*.tgz
+
+# Operating-system files
+.DS_Store
+
+# Local browser and visual-QA artifacts
+.playwright-cli/
+output/playwright/
+
+# Local agent context
+.agents/
+.codex/
+CLAUDE.md

@@ -1,0 +1,13 @@
+server.js
+src
+.wrangler
+wrangler.jsonc
+plans
+README.md
+.claude
+.assetsignore
+.gitignore
+.git
+components/*/.git
+components/*/tests
+components/*/node_modules

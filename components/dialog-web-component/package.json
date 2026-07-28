@@ -1,0 +1,58 @@
+{
+  "name": "shared-element-transition-dialog-web-component",
+  "version": "0.1.0",
+  "description": "A dependency-free hold-to-delete dialog Web Component with shared-element transitions.",
+  "type": "module",
+  "main": "./index.js",
+  "module": "./index.js",
+  "browser": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "browser": "./index.js",
+      "import": "./index.js",
+      "default": "./index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "delete-confirm-dialog.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": [
+    "./index.js",
+    "./delete-confirm-dialog.js"
+  ],
+  "scripts": {
+    "dev": "python3 -m http.server 4173",
+    "serve": "python3 -m http.server 4173",
+    "pack:release": "npm pack --cache ./.npm-cache"
+  },
+  "keywords": [
+    "animation",
+    "dialog",
+    "microinteraction",
+    "shared-element-transition",
+    "ui",
+    "web-component"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zanwei/shared-element-transition-dialog-web-component.git"
+  },
+  "homepage": "https://github.com/zanwei/shared-element-transition-dialog-web-component#readme",
+  "bugs": {
+    "url": "https://github.com/zanwei/shared-element-transition-dialog-web-component/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

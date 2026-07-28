@@ -1,0 +1,63 @@
+{
+  "name": "liquid-connector-web-component",
+  "version": "0.1.0",
+  "description": "An SVG path-math Web Component for a liquid card-to-prompt peel interaction.",
+  "type": "module",
+  "main": "./index.js",
+  "module": "./index.js",
+  "browser": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "browser": "./index.js",
+      "import": "./index.js",
+      "default": "./index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "liquid-path.js",
+    "liquid-connector.js",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "sideEffects": [
+    "./index.js",
+    "./liquid-path.js",
+    "./liquid-connector.js"
+  ],
+  "scripts": {
+    "dev": "python3 -m http.server 4173",
+    "test": "node --test",
+    "check": "npm test && npm pack --dry-run --cache ./.npm-cache",
+    "pack:release": "npm pack --cache ./.npm-cache",
+    "prepublishOnly": "npm run check"
+  },
+  "keywords": [
+    "animation",
+    "microinteraction",
+    "path-math",
+    "svg",
+    "ui",
+    "web-component"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zanwei/liquid-connector-web-component.git"
+  },
+  "homepage": "https://github.com/zanwei/liquid-connector-web-component#readme",
+  "bugs": {
+    "url": "https://github.com/zanwei/liquid-connector-web-component/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

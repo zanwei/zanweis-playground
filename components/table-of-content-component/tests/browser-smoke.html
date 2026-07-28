@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <title>Table of Content browser smoke test</title>
+  </head>
+  <body>
+    <table-of-content
+      id="toc"
+      label="Browser smoke test"
+      open
+      value="1"
+    ></table-of-content>
+
+    <script>
+      const toc = document.querySelector("#toc");
+      toc.items = [
+        { title: "First", description: "First description" },
+        { title: "Second", description: "Second description" },
+        { title: "Third", description: "Third description" },
+      ];
+    </script>
+    <script src="../table-of-content-model.js"></script>
+    <script src="../table-of-content.js"></script>
+    <script>
+      toc.select(2, { open: false, emit: false });
+      const pinnedSelection = {
+        dataOpen: toc.hasAttribute("data-open"),
+        open: toc.open,
+        ownItemsProperty: Object.prototype.hasOwnProperty.call(toc, "items"),
+        tickCount:
+          toc.shadowRoot.querySelectorAll('[part="tick"]').length,
+        value: toc.value,
+      };
+
+      toc.close();
+      const closed = !toc.hasAttribute("data-open") && !toc.open;
+
+      toc.open = true;
+      toc.remove();
+      toc.open = false;
+      document.body.append(toc);
+      const reconnectedClosed =
+        !toc.hasAttribute("data-open") && !toc.open;
+
+      toc.select(0, { open: false, emit: false });
+      toc.items = [
+        { title: "Replacement first" },
+        { title: "Replacement second" },
+      ];
+      const replacement = {
+        ariaValueMax:
+          toc.shadowRoot
+            .querySelector('[part="rail"]')
+            .getAttribute("aria-valuemax"),
+        targetCenter: toc._targetCenter,
+        tickCount:
+          toc.shadowRoot.querySelectorAll('[part="tick"]').length,
+        value: toc.value,
+      };
+
+      toc.dir = "rtl";
+      const rtl = {
+        cardOrigin: getComputedStyle(
+          toc.shadowRoot.querySelector('[part="card"]'),
+        ).transformOrigin,
+        tickOrigin: getComputedStyle(
+          toc.shadowRoot.querySelector('[part="tick"]'),
+        ).transformOrigin,
+      };
+      toc.removeAttribute("dir");
+
+      let itemLimitRejected = false;
+      try {
+        toc.items = Array.from({ length: 201 }, () => ({}));
+      } catch (error) {
+        itemLimitRejected =
+          error instanceof RangeError &&
+          error.message.includes("at most 200 items");
+      }
+
+      document.body.dataset.smoke = JSON.stringify({
+        closed,
+        itemLimitRejected,
+        pinnedSelection,
+        reconnectedClosed,
+        replacement,
+        rtl,
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta
+      name="description"
+      content="A zero-dependency vertical table of content Web Component."
+    >
+    <link rel="icon" href="data:,">
+    <title>Table of Content</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-size: 16px;
+        background: #fff;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        min-block-size: 100%;
+        margin: 0;
+        background: #fff;
+      }
+
+      body {
+        min-block-size: 100vh;
+        min-block-size: 100svh;
+        display: grid;
+        place-items: center;
+        padding:
+          max(1rem, env(safe-area-inset-top))
+          max(1rem, env(safe-area-inset-right))
+          max(1rem, env(safe-area-inset-bottom))
+          max(1rem, env(safe-area-inset-left));
+      }
+
+      table-of-content {
+        --toc-background: #fff;
+        --toc-surface: #fff;
+        inline-size: min(100%, 33rem);
+      }
+    </style>
+  </head>
+  <body>
+    <table-of-content label="Document contents" value="4"></table-of-content>
+    <script src="./demo.js"></script>
+    <script src="./table-of-content-model.js"></script>
+    <script src="./table-of-content.js"></script>
+  </body>
+</html>

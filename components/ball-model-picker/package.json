@@ -1,0 +1,19 @@
+{
+  "name": "ball-model-picker",
+  "version": "0.1.0",
+  "description": "A pinball-style reasoning effort picker as a zero-dependency Web Component.",
+  "type": "module",
+  "exports": "./src/ball-model-picker.js",
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zanwei/ball-model-picker.git"
+  },
+  "homepage": "https://github.com/zanwei/ball-model-picker#readme",
+  "license": "MIT"
+}

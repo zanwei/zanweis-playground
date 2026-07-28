@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /presence/
+
+Sitemap: https://zanweis-playground.zanwei.workers.dev/sitemap.xml

@@ -1,0 +1,4 @@
+.DS_Store
+.codex-*
+.playwright-cli/
+node_modules/

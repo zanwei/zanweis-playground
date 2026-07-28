@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="light" />
+    <meta
+      name="description"
+      content="A path-math liquid connector web component reconstructed from the supplied motion reference."
+    />
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./styles.css" />
+    <title>Liquid Connector</title>
+  </head>
+  <body>
+    <main class="reference-stage" aria-label="Liquid connector demo">
+      <liquid-connector
+        id="connector"
+        open
+        gap="10"
+        provider="Notion"
+        eyebrow="MCP Connector"
+        placeholder="Ask anything..."
+        emit-frames
+      ></liquid-connector>
+
+      <aside class="controls" aria-labelledby="inspector-title">
+        <header class="inspector-header">
+          <h2 id="inspector-title">Liquid Path</h2>
+          <button
+            id="settings-toggle"
+            class="inspector-toggle"
+            type="button"
+            aria-controls="inspector-content"
+            aria-expanded="true"
+            aria-label="Collapse settings"
+          >
+            <svg
+              class="inspector-tune-icon"
+              viewBox="0 0 20 20"
+              aria-hidden="true"
+            >
+              <path d="M3 5h6M13 5h4M3 10h2M9 10h8M3 15h8M15 15h2"></path>
+              <circle cx="11" cy="5" r="1.5"></circle>
+              <circle cx="7" cy="10" r="1.5"></circle>
+              <circle cx="13" cy="15" r="1.5"></circle>
+            </svg>
+          </button>
+        </header>
+
+        <div id="inspector-content" class="inspector-content">
+          <div class="inspector-content-inner">
+        <section class="inspector-section" aria-labelledby="separation-title">
+          <h3 id="separation-title" class="section-title">Separation</h3>
+          <div class="gap-control">
+            <div class="range-shell">
+              <div class="field-heading">
+                <label for="gap">Gap</label>
+                <output id="gap-value" class="gap-value" for="gap">
+                  <span id="gap-number">+10.0</span>
+                  <span class="gap-unit" aria-hidden="true">px</span>
+                </output>
+              </div>
+              <input
+                id="gap"
+                type="range"
+                min="-60"
+                max="10"
+                step="0.1"
+                value="10"
+                aria-describedby="gap-help"
+                aria-valuetext="plus 10 pixels"
+              />
+              <span class="range-landmark range-landmark--merge" aria-hidden="true"></span>
+              <span class="range-landmark range-landmark--tear" aria-hidden="true"></span>
+            </div>
+            <span id="gap-help" class="sr-only">
+              Scrub the separation and overlap between the two surfaces.
+            </span>
+          </div>
+        </section>
+
+        <section
+          class="inspector-section peel-section"
+          aria-labelledby="peel-title"
+        >
+          <div class="section-heading">
+            <div class="section-title-group">
+              <h3 id="peel-title" class="section-title">Peel</h3>
+              <span class="shape-lock">
+                <svg viewBox="0 0 12 12" aria-hidden="true">
+                  <rect x="2.25" y="5.25" width="7.5" height="5.25" rx="1.5"></rect>
+                  <path d="M4 5.25V4a2 2 0 0 1 4 0v1.25"></path>
+                </svg>
+                Card fixed
+              </span>
+            </div>
+            <button id="reset-peel" class="reset-button" type="button">
+              Reset
+            </button>
+          </div>
+          <p class="section-help">
+            Tune the connecting seam without deforming the output card.
+          </p>
+
+          <div class="parameter-stack">
+            <div class="range-shell parameter-shell">
+              <div class="field-heading">
+                <label for="peel-detach">Detach</label>
+                <output class="gap-value" for="peel-detach">
+                  <span id="peel-detach-value">6.00</span>
+                  <span class="gap-unit" aria-hidden="true">px</span>
+                </output>
+              </div>
+              <input
+                id="peel-detach"
+                data-peel-key="detachGap"
+                data-output="peel-detach-value"
+                data-digits="2"
+                type="range"
+                min="6"
+                max="9.8"
+                step="0.05"
+                value="6"
+                aria-label="Detach threshold"
+              />
+            </div>
+
+            <div class="range-shell parameter-shell">
+              <div class="field-heading">
+                <label for="peel-transition">Transition</label>
+                <output class="gap-value" for="peel-transition">
+                  <span id="peel-transition-value">6.50</span>
+                  <span class="gap-unit" aria-hidden="true">px</span>
+                </output>
+              </div>
+              <input
+                id="peel-transition"
+                data-peel-key="transition"
+                data-output="peel-transition-value"
+                data-digits="2"
+                type="range"
+                min="1.5"
+                max="8"
+                step="0.05"
+                value="6.5"
+                aria-label="Peel transition distance"
+              />
+            </div>
+
+            <div class="range-shell parameter-shell">
+              <div class="field-heading">
+                <label for="peel-coupling">Coupling radius</label>
+                <output class="gap-value" for="peel-coupling">
+                  <span id="peel-coupling-value">5.0</span>
+                  <span class="gap-unit" aria-hidden="true">px</span>
+                </output>
+              </div>
+              <input
+                id="peel-coupling"
+                data-peel-key="couplingRadius"
+                data-output="peel-coupling-value"
+                data-digits="1"
+                type="range"
+                min="4"
+                max="48"
+                step="0.5"
+                value="5"
+                aria-label="Coupling circle radius"
+              />
+            </div>
+
+            <div class="range-shell parameter-shell">
+              <div class="field-heading">
+                <label for="peel-pull">Pull</label>
+                <output class="gap-value" for="peel-pull">
+                  <span id="peel-pull-value">2.5</span>
+                  <span class="gap-unit" aria-hidden="true">px</span>
+                </output>
+              </div>
+              <input
+                id="peel-pull"
+                data-peel-key="pull"
+                data-output="peel-pull-value"
+                data-digits="1"
+                type="range"
+                min="0"
+                max="8"
+                step="0.1"
+                value="2.5"
+                aria-label="Surface pull"
+              />
+            </div>
+          </div>
+        </section>
+
+        <section class="inspector-section" aria-labelledby="preview-title">
+          <h3 id="preview-title" class="section-title">Preview</h3>
+          <div class="property-stack">
+            <label class="debug-control" for="debug">
+              <span class="switch-copy">
+                <strong>Path debug</strong>
+                <small>Path overlay</small>
+              </span>
+              <input
+                id="debug"
+                class="switch-input"
+                type="checkbox"
+                role="switch"
+                aria-controls="connector"
+              />
+              <span class="switch-ui" aria-hidden="true">
+                <span class="switch-thumb"></span>
+                <span class="switch-option switch-option--off">Off</span>
+                <span class="switch-option switch-option--on">On</span>
+              </span>
+            </label>
+          </div>
+        </section>
+
+        <button
+          id="toggle"
+          class="toggle"
+          type="button"
+          aria-controls="connector"
+          aria-expanded="true"
+        >
+          <svg
+            class="toggle-icon"
+            viewBox="0 0 18 18"
+            aria-hidden="true"
+          >
+            <rect x="3" y="2.5" width="12" height="5" rx="2.5"></rect>
+            <rect x="3" y="10.5" width="12" height="5" rx="2.5"></rect>
+          </svg>
+          <span id="toggle-label">Collapse</span>
+        </button>
+          </div>
+        </div>
+      </aside>
+
+      <p id="status" class="sr-only" role="status" aria-live="polite"></p>
+    </main>
+
+    <script src="./liquid-path.js"></script>
+    <script src="./liquid-connector.js"></script>
+    <script>
+      (function bindDemo() {
+        "use strict";
+
+        const connector = document.querySelector("#connector");
+        const controls = document.querySelector(".controls");
+        const settingsToggle = document.querySelector("#settings-toggle");
+        const inspectorContent = document.querySelector(
+          "#inspector-content",
+        );
+        const gap = document.querySelector("#gap");
+        const gapNumber = document.querySelector("#gap-number");
+        const peelRanges = [
+          ...document.querySelectorAll("[data-peel-key]"),
+        ];
+        const resetPeel = document.querySelector("#reset-peel");
+        const debug = document.querySelector("#debug");
+        const toggle = document.querySelector("#toggle");
+        const toggleLabel = document.querySelector("#toggle-label");
+        const status = document.querySelector("#status");
+        let draggingGap = false;
+        let peelSignature = "";
+
+        function setInspectorCollapsed(collapsed) {
+          controls.classList.toggle("is-collapsed", collapsed);
+          settingsToggle.setAttribute(
+            "aria-expanded",
+            String(!collapsed),
+          );
+          settingsToggle.setAttribute(
+            "aria-label",
+            collapsed ? "Expand settings" : "Collapse settings",
+          );
+          inspectorContent.toggleAttribute("inert", collapsed);
+          inspectorContent.setAttribute(
+            "aria-hidden",
+            String(collapsed),
+          );
+        }
+
+        function displayNumber(value, digits = 1, plus = true) {
+          const rounded = Number(value).toFixed(digits);
+          if (value < 0) return `−${Math.abs(Number(rounded)).toFixed(digits)}`;
+          if (value > 0 && plus) return `+${rounded}`;
+          return rounded;
+        }
+
+        function spokenPixels(value) {
+          if (value < 0) return `minus ${Math.abs(value).toFixed(1)} pixels`;
+          if (value > 0) return `plus ${value.toFixed(1)} pixels`;
+          return "zero pixels";
+        }
+
+        function updateGapReadout(value) {
+          gapNumber.textContent = displayNumber(value);
+          gap.setAttribute("aria-valuetext", spokenPixels(value));
+        }
+
+        function paintRange(input, value) {
+          const minimum = Number(input.min);
+          const maximum = Number(input.max);
+          const clamped = Math.max(minimum, Math.min(maximum, value));
+          const progress =
+            ((clamped - minimum) / (maximum - minimum)) * 100;
+          input.style.setProperty("--range-progress", `${progress}%`);
+        }
+
+        function beginScrubbing(input) {
+          if (input === gap) draggingGap = true;
+          input.closest(".range-shell")?.classList.add("is-scrubbing");
+        }
+
+        for (const input of [gap, ...peelRanges]) {
+          input.addEventListener(
+            "pointerdown",
+            () => beginScrubbing(input),
+          );
+        }
+
+        function endScrubbing() {
+          draggingGap = false;
+          for (const shell of document.querySelectorAll(
+            ".range-shell.is-scrubbing",
+          )) {
+            shell.classList.remove("is-scrubbing");
+          }
+        }
+
+        addEventListener("pointerup", endScrubbing);
+        addEventListener("pointercancel", endScrubbing);
+        addEventListener("blur", endScrubbing);
+        gap.addEventListener("lostpointercapture", endScrubbing);
+        for (const input of peelRanges) {
+          input.addEventListener("lostpointercapture", endScrubbing);
+        }
+        gap.addEventListener("input", () => {
+          const value = Number(gap.value);
+          connector.setGap(value, { immediate: true });
+          updateGapReadout(value);
+          paintRange(gap, value);
+        });
+
+        function updateThresholds(parameters) {
+          const minimumGap = Number(gap.min);
+          const maximumGap = Number(gap.max);
+          const gapStep = Number(gap.step);
+          const gapPrecision = (gap.step.split(".")[1] || "").length;
+          let manualMergeGap = minimumGap;
+          let scrubMode = "detached";
+          const scrubSteps = Math.round(
+            (maximumGap - minimumGap) / gapStep,
+          );
+
+          for (let index = 0; index <= scrubSteps; index += 1) {
+            const candidate = Number(
+              (maximumGap - index * gapStep).toFixed(gapPrecision),
+            );
+            scrubMode = globalThis.LiquidPath.resolveScrubMode(
+              scrubMode,
+              candidate,
+              parameters,
+            );
+            if (scrubMode === "merged") {
+              manualMergeGap = candidate;
+              break;
+            }
+          }
+
+          const mergeProgress =
+            ((manualMergeGap - minimumGap) /
+              (maximumGap - minimumGap)) *
+            100;
+          const tearProgress =
+            ((parameters.detachGap - minimumGap) /
+              (maximumGap - minimumGap)) *
+            100;
+          controls.style.setProperty(
+            "--merge-progress",
+            `${mergeProgress}%`,
+          );
+          controls.style.setProperty(
+            "--tear-progress",
+            `${tearProgress}%`,
+          );
+        }
+
+        function syncPeelControls(parameters) {
+          const nextSignature = [
+            parameters.detachGap,
+            parameters.transition,
+            parameters.couplingRadius,
+            parameters.pull,
+          ].join(":");
+          peelSignature = nextSignature;
+
+          for (const input of peelRanges) {
+            const value = Number(parameters[input.dataset.peelKey]);
+            const digits = Number(input.dataset.digits || 1);
+            const output = document.querySelector(
+              `#${input.dataset.output}`,
+            );
+            input.value = String(value);
+            output.textContent = value.toFixed(digits);
+            input.setAttribute(
+              "aria-valuetext",
+              `${value.toFixed(digits)} pixels`,
+            );
+            paintRange(input, value);
+          }
+
+          updateThresholds(parameters);
+        }
+
+        for (const input of peelRanges) {
+          input.addEventListener("input", () => {
+            const parameters = connector.setPeelParameters({
+              [input.dataset.peelKey]: Number(input.value),
+            });
+            syncPeelControls(parameters);
+          });
+        }
+
+        resetPeel.addEventListener("click", () => {
+          syncPeelControls(connector.resetPeelParameters());
+        });
+
+        settingsToggle.addEventListener("click", () => {
+          setInspectorCollapsed(
+            !controls.classList.contains("is-collapsed"),
+          );
+        });
+        debug.addEventListener("change", () => {
+          connector.toggleAttribute("debug", debug.checked);
+        });
+        toggle.addEventListener("click", () => connector.toggle());
+
+        connector.addEventListener("liquid-frame", (event) => {
+          const detail = event.detail;
+          const liveGap = Number(detail.gap);
+
+          const frameParameters = detail.peelParameters;
+          const frameSignature = frameParameters
+            ? [
+                frameParameters.detachGap,
+                frameParameters.transition,
+                frameParameters.couplingRadius,
+                frameParameters.pull,
+              ].join(":")
+            : "";
+          if (
+            frameParameters &&
+            frameSignature !== peelSignature
+          ) {
+            syncPeelControls(frameParameters);
+          }
+
+          if (!draggingGap) {
+            const clamped = Math.max(
+              Number(gap.min),
+              Math.min(Number(gap.max), liveGap),
+            );
+            gap.value = String(clamped);
+            updateGapReadout(liveGap);
+            paintRange(gap, clamped);
+          }
+        });
+        connector.addEventListener("liquid-toggle", (event) => {
+          const open = event.detail.open;
+          toggle.setAttribute("aria-expanded", String(open));
+          toggle.dataset.open = String(open);
+          toggleLabel.textContent = open ? "Collapse" : "Expand";
+        });
+        connector.addEventListener("connect", () => {
+          status.textContent = "Notion connection requested.";
+        });
+        connector.addEventListener("skip", () => {
+          status.textContent = "Connector dismissed.";
+        });
+        connector.addEventListener("submit", (event) => {
+          status.textContent = `Sent: ${event.detail.value}`;
+        });
+
+        toggle.dataset.open = String(connector.open);
+        setInspectorCollapsed(false);
+        syncPeelControls(connector.peelParameters);
+        updateGapReadout(Number(gap.value));
+        paintRange(gap, Number(gap.value));
+      })();
+    </script>
+  </body>
+</html>

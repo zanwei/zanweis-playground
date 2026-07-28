@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ChatGPT Model Selector — Web Component</title>
+<link rel="icon" href="./ChatGPTModelSelector/Assets.xcassets/AppIcon.appiconset/AppIcon.png">
+<style>
+  :root {
+    color-scheme: light;
+  }
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+  }
+  body {
+    background: #FFFFFF;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+  }
+</style>
+</head>
+<body>
+
+<chatgpt-model-selector id="selector" model-name="GPT-5.4" value="1"></chatgpt-model-selector>
+
+<script type="module" src="./JavaScript/chatgpt-model-selector.js"></script>
+</body>
+</html>

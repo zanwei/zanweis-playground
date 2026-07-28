@@ -1,0 +1,42 @@
+/* transitions.dev motion tokens used by the component. */
+:root {
+  --duration-micro: 80ms;
+  --duration-quick: 150ms;
+  --duration-fast: 250ms;
+  --duration-slow: 400ms;
+  --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: ease-in-out;
+  --ease-linear: linear;
+  --distance-micro: 4px;
+  --distance-base: 8px;
+  --scale-large: 0.96;
+  --blur-small: 2px;
+
+  --text-swap-dur: var(--duration-quick);
+  --text-swap-translate-y: var(--distance-micro);
+  --text-swap-blur: var(--blur-small);
+  --text-swap-ease: var(--ease-in-out);
+
+  --modal-open-dur: var(--duration-fast);
+  --modal-close-dur: var(--duration-quick);
+  --modal-scale: var(--scale-large);
+  --modal-scale-close: var(--scale-large);
+  --modal-ease: var(--ease-smooth-out);
+
+  --check-opacity-dur: var(--duration-fast);
+  --check-path-dur: 200ms;
+  --check-path-delay: var(--duration-micro);
+  --check-ease-out: var(--ease-smooth-out);
+  --check-ease-opacity: var(--ease-smooth-out);
+  --check-ease-path: var(--ease-smooth-out);
+
+  /* The centered panel morph is the one ceremonial layout transition. */
+  --shared-dialog-panel-duration: 300ms;
+  --shared-dialog-content-duration: var(--duration-quick);
+  --delete-morph-dur: 300ms;
+  --delete-morph-ease: var(--ease-smooth-out);
+  --matched-text-dur: var(--duration-quick);
+  /* Success content establishes itself early during the 300ms morph. */
+  --success-content-dur: var(--duration-micro);
+  --success-content-delay: 0ms;
+}
