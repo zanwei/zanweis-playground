@@ -131,3 +131,25 @@ for (const item of CATALOG) {
   item.github = `https://github.com/zanwei/${item.repo}`;
 }
 
+// Figma logo explorations. Cards show a vendored thumbnail (no Figma weight
+// on first paint); the playground loads the full interactive embed.
+const FIGMA_FILES = [
+  { slug: 'dia-logo', title: 'Dia Logo', key: 'b6dp7Bk4Nc40b223KTStZ0', file: 'Dia-logo--Community-' },
+  { slug: 'linear-logo', title: 'Linear Logo', key: 'FaC6zeEtEwaLWn2JXpVgYK', file: 'Linear--Community-' },
+  { slug: 'fontdetector-logo', title: 'FontDetector Logo', key: 'lx9dzGhWQf7UrNUln8qZ4G', file: 'FontDetector-Logo--Community-' },
+  { slug: 'clear-logo', title: 'Clear App Logo', key: '2H97LwDRKcrkL4Zf605ufj', file: 'Clear-App-Logo--Community-' },
+];
+
+for (const f of FIGMA_FILES) {
+  CATALOG.push({
+    slug: f.slug,
+    title: f.title,
+    type: 'figma',
+    thumb: `assets/figma/${f.slug.replace('-logo', '')}.png`,
+    embed: `https://embed.figma.com/design/${f.key}/${f.file}?node-id=0-1&embed-host=zanweis-playground`,
+    github: `https://www.figma.com/design/${f.key}/${f.file}`,
+    bg: '#ffffff',
+    aspect: '4 / 3',
+  });
+}
+

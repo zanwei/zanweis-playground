@@ -526,6 +526,16 @@ html.revealing .sheet {
   opacity: 1;
 }
 
+/* Figma cards: a plain thumbnail fills the media box. */
+.figma-thumb {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
 .card-hit {
   position: absolute;
   inset: 0;
@@ -816,6 +826,37 @@ html.revealing .sheet {
 
 .playground-frame.is-ready {
   opacity: 1;
+}
+
+/* Placeholder thumbnail while a heavy embed boots: appears the instant the
+   flight lands, then yields to the live view with a blur-masked crossfade. */
+.pg-thumb {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  pointer-events: none; /* purely visual — never between the user and the view */
+  transition:
+    opacity var(--duration-fast) var(--ease-in-out, ease-in-out),
+    filter var(--duration-fast) var(--ease-in-out, ease-in-out);
+}
+
+.pg-thumb[hidden] {
+  display: none;
+}
+
+/* masked during the flight like everything else — only a solid surface flies */
+.playground-window.is-morphing .pg-thumb {
+  opacity: 0;
+  transition: none;
+}
+
+.playground-body.is-live .pg-thumb {
+  opacity: 0;
+  filter: blur(var(--blur-small));
+  pointer-events: none;
 }
 
 /* ------------------------------------------------------------- fountain */
@@ -1280,6 +1321,7 @@ html.revealing .sheet {
   .card-open,
   .card-media,
   .card-frame iframe,
+  .pg-thumb,
   .chat-toast,
   .brand,
   .topbar,
