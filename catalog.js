@@ -123,7 +123,11 @@ const CATALOG = [
 ];
 
 for (const item of CATALOG) {
-  item.demo = `components/${item.repo}/index.html`;
+  // Directory-canonical URL: Workers Assets 307-redirects ".../index.html"
+  // to ".../", which broke the modal's loaded-document check and cost every
+  // preview an extra round trip. The directory form loads redirect-free on
+  // both the Worker and `node server.js`.
+  item.demo = `components/${item.repo}/`;
   item.github = `https://github.com/zanwei/${item.repo}`;
 }
 

@@ -48,10 +48,11 @@
     previewFrames.forEach(({ frame, item }, i) => {
       setTimeout(() => {
         frame.src = demoUrl(item.demo);
-      }, i * 90);
+      }, i * 150); // spread parses across the ~2s shuffle so it never hitches
     });
   }
-  addEventListener('boot:done', hydratePreviews, { once: true });
+  addEventListener('boot:hydrate', hydratePreviews, { once: true }); // shuffle cover
+  addEventListener('boot:done', hydratePreviews, { once: true }); // boot-skip path
   setTimeout(hydratePreviews, 6500); // failsafe: boot.js never signalling
 
   function freezePreview(win) {
@@ -68,7 +69,7 @@
   // volume guard is a first-click gate: the first click ever stays silent
   // and warns via toast; sound starts from the next click. Gain is capped
   // as a floor-level safety regardless.
-  const clickSound = new Audio('assets/click.wav');
+  const clickSound = new Audio('assets/click.m4a'); // AAC: 9.6KB vs the 192KB wav
   clickSound.preload = 'auto';
   clickSound.volume = 0.5;
 

@@ -167,6 +167,9 @@
 
   let step = 0;
   setStep(0);
+  // The sheet is opaque for the whole shuffle — perfect cover for preview
+  // iframes to fetch and parse, so the gallery lands already alive.
+  dispatchEvent(new Event('boot:hydrate'));
   const timer = setInterval(() => {
     step++;
     if (step < 4) {
