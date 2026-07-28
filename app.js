@@ -23,6 +23,7 @@
     close: document.getElementById('pg-close'),
     body: document.getElementById('pg-body'),
     frame: document.getElementById('pg-frame'),
+    thumb: document.getElementById('pg-thumb'),
   };
 
   const tokenMs = (name, fallback) =>
@@ -255,6 +256,23 @@
     byModal.github.href = item.github;
     byModal.body.style.background = item.bg;
     byModal.frame.classList.remove('is-ready');
+    byModal.body.classList.remove('is-live');
+
+    // While a heavy embed boots, the modal shows the same thumbnail the card
+    // did — landing continuity plus zero blank time. Live content crossfades
+    // in over it when ready.
+    if (item.thumb) {
+      byModal.thumb.src = item.thumb;
+      byModal.thumb.hidden = false;
+    } else {
+      byModal.thumb.hidden = true;
+      byModal.thumb.removeAttribute('src');
+    }
+
+    // Cross-origin embeds parse in their own process — they cannot cost the
+    // flight a single frame, so start their network time immediately. Only
+    // same-origin demos wait for landing.
+    if (item.embed) byModal.frame.src = playgroundUrl(item);
 
     byModal.root.hidden = false;
     byModal.root.classList.remove('is-closing');
@@ -280,14 +298,14 @@
         win.classList.remove('is-morphing');
         win.style.transformOrigin = '';
         if (openItem !== item) return;
-        byModal.frame.src = playgroundUrl(item);
+        if (!item.embed) byModal.frame.src = playgroundUrl(item);
         // inert invalidates style for the whole shell subtree (8 iframe
         // documents) — never spend that on a flight-critical frame.
         shell.inert = true;
         byModal.close.focus({ preventScroll: true });
       }, fastMs() + 30);
     } else {
-      byModal.frame.src = playgroundUrl(item);
+      if (!item.embed) byModal.frame.src = playgroundUrl(item);
       void byModal.root.offsetWidth; // commit hidden -> visible before transitioning
       byModal.root.classList.add('is-open');
       // aria-modal only claims the background is out of reach; inert makes it so.
@@ -325,6 +343,9 @@
       byModal.root.hidden = true;
       byModal.root.classList.remove('is-closing');
       byModal.frame.src = 'about:blank';
+      byModal.thumb.hidden = true;
+      byModal.thumb.removeAttribute('src');
+      byModal.body.classList.remove('is-live');
       win.classList.remove('is-morphing');
       win.style.transform = '';
       win.style.transformOrigin = '';
@@ -355,6 +376,7 @@
       }
     }
     byModal.frame.classList.add('is-ready');
+    byModal.body.classList.add('is-live'); // placeholder thumb yields to the live view
     // Keyboard focus lives inside the demo while the user plays with it, so
     // Escape must be caught in the iframe too (same origin).
     try {
