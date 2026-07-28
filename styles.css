@@ -886,7 +886,9 @@ html.revealing .sheet {
 }
 
 .playground-body.is-static .pg-thumb {
-  object-fit: cover;
+  /* Static artwork is the content, not a disposable loading crop. The
+     catalog background blends any letterbox space with the image edges. */
+  object-fit: contain;
   opacity: 1;
   filter: none;
 }
@@ -1064,7 +1066,7 @@ html.revealing .sheet {
     scale var(--duration-quick) var(--ease-out);
 }
 
-/* Bottom dock: the white input pill plus its display toggle, rising together
+/* Bottom dock: the white input pill plus its display mode, rising together
    like a toast. Depth comes from layered shadows, not hard borders. */
 
 .chat-dock {
@@ -1086,6 +1088,10 @@ html.revealing .sheet {
 .chat-dock.is-on {
   opacity: 1;
   transform: translateY(0);
+}
+
+.chat-dock.is-instant {
+  transition: none;
 }
 
 /* Status toast above the dock — sits over the composer's own gap so it never
@@ -1152,6 +1158,8 @@ html.revealing .sheet {
 .chat-bar {
   display: flex;
   align-items: center;
+  flex: 1;
+  min-width: 0;
   gap: 6px;
   padding: 4px 4px 4px 8px;
   border-radius: var(--radius-pill);
@@ -1165,6 +1173,8 @@ html.revealing .sheet {
 
 
 .chat-bar input {
+  flex: 1;
+  min-width: 0;
   width: min(360px, 70vw);
   padding: 8px 10px;
   border: 0;
@@ -1265,13 +1275,18 @@ html.revealing .sheet {
   color: var(--ink);
 }
 
-/* The display toggle rides in the dock, styled as its own white pill. */
+/* The whole pill is the bullet display state. Three clipped runners cross at
+   independent linear rates, echoing the messages themselves without adding
+   another switch inside the button. */
 
-.bullet-toggle {
+.bullet-mode {
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 13px;
+  justify-content: center;
+  gap: 9px;
+  min-height: 44px;
+  padding: 0 12px 0 14px;
   border-radius: var(--radius-pill);
   background: var(--bg);
   box-shadow:
@@ -1279,44 +1294,92 @@ html.revealing .sheet {
     0 2px 6px rgba(17, 17, 20, 0.06),
     0 12px 32px rgba(17, 17, 20, 0.14);
   font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
   color: var(--ink-2);
-  transition: color var(--duration-quick) ease;
+  transition:
+    background-color var(--duration-quick) ease,
+    color var(--duration-quick) ease,
+    transform var(--duration-quick) var(--ease-out);
 }
 
-.bullet-toggle:hover {
-  color: var(--ink);
-}
-
-.bullet-toggle .switch {
-  position: relative;
-  width: 34px;
-  height: 20px;
-  border-radius: var(--radius-pill);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  transition: background-color var(--duration-quick) ease;
-}
-
-.bullet-toggle .knob {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: #fff;
-  border: 1px solid var(--border);
-  transition: translate var(--duration-quick) var(--ease-out);
-}
-
-.bullet-toggle[aria-checked='true'] .switch {
+.bullet-mode[aria-pressed='true'] {
   background: var(--ink);
-  border-color: var(--ink);
+  color: #fff;
 }
 
-.bullet-toggle[aria-checked='true'] .knob {
-  translate: 14px 0;
-  border-color: transparent;
+.bullet-mode:active {
+  transform: scale(0.97);
+}
+
+.bullet-flow {
+  position: relative;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 16px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.bullet-flow-path {
+  position: absolute;
+  left: 0;
+  top: 2px;
+  width: 8px;
+  height: 2px;
+  border-radius: var(--radius-pill);
+  background: currentColor;
+  opacity: 0.42;
+  transform: translate3d(3px, 0, 0);
+  transition: opacity var(--duration-quick) ease;
+}
+
+.bullet-flow-path:nth-child(2) {
+  top: 7px;
+  width: 12px;
+  transform: translate3d(12px, 0, 0);
+}
+
+.bullet-flow-path:nth-child(3) {
+  top: 12px;
+  width: 6px;
+  transform: translate3d(7px, 0, 0);
+}
+
+@keyframes bullet-mode-flow {
+  from {
+    transform: translate3d(-14px, 0, 0);
+  }
+  to {
+    transform: translate3d(30px, 0, 0);
+  }
+}
+
+.bullet-mode[aria-pressed='true'] .bullet-flow-path {
+  opacity: 0.9;
+  animation: bullet-mode-flow 1.35s linear -0.2s infinite;
+}
+
+.bullet-mode[aria-pressed='true'] .bullet-flow-path:nth-child(2) {
+  animation-duration: 1.8s;
+  animation-delay: -1.05s;
+}
+
+.bullet-mode[aria-pressed='true'] .bullet-flow-path:nth-child(3) {
+  animation-duration: 2.25s;
+  animation-delay: -0.7s;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .bullet-mode:hover {
+    background: var(--surface);
+    color: var(--ink);
+  }
+
+  .bullet-mode[aria-pressed='true']:hover {
+    background: #242427;
+    color: #fff;
+  }
 }
 
 /* ----------------------------------------------------------- responsive */
@@ -1324,6 +1387,19 @@ html.revealing .sheet {
 /* On phones the playground takes the whole screen: a 20px matte around a
    scaled demo helps nobody at this size. */
 @media (max-width: 640px) {
+  .chat-dock {
+    left: 12px;
+    right: 12px;
+    bottom: calc(12px + env(safe-area-inset-bottom));
+    width: auto;
+    translate: 0 0;
+    gap: 6px;
+  }
+
+  .chat-bar input {
+    width: 100%;
+  }
+
   .playground {
     padding: 0;
   }
@@ -1334,13 +1410,6 @@ html.revealing .sheet {
     height: 100dvh;
     border-radius: 0;
     border: 0;
-  }
-
-  /* A 4:3 artwork has no interactive surface that benefits from portrait
-     cropping. Keep the whole exploration visible and blend the letterbox
-     area with its sampled edge color from the catalog. */
-  .playground-body.is-static .pg-thumb {
-    object-fit: contain;
   }
 
   .playground-head {
@@ -1389,7 +1458,8 @@ html.revealing .sheet {
   .presence-cursor-inner,
   .chat-dock,
   .bullet.is-out,
-  .bullet-toggle .knob,
+  .bullet-mode,
+  .bullet-flow-path,
   .chat-hint,
   .globe-pop,
   .online {
@@ -1398,6 +1468,10 @@ html.revealing .sheet {
 
   .chat-dock {
     transform: none;
+  }
+
+  .bullet-mode[aria-pressed='true'] .bullet-flow-path {
+    animation: none;
   }
 
   html.booting .sheet {

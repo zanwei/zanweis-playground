@@ -66,30 +66,12 @@
     };
   }
 
-  // Card-click sound. Browsers cannot read the SYSTEM volume, so the loud-
-  // volume guard is a first-click gate: the first click ever stays silent
-  // and warns via toast; sound starts from the next click. Gain is capped
-  // as a floor-level safety regardless.
+  // Card-click sound. Keep its gain capped and treat playback as best-effort.
   const clickSound = new Audio('assets/click.m4a'); // AAC: 9.6KB vs the 192KB wav
   clickSound.preload = 'auto';
   clickSound.volume = 0.5;
 
   function playClick() {
-    let warned = false;
-    try {
-      warned = localStorage.getItem('zw-sound-warned') === '1';
-    } catch {
-      warned = true; // no storage: don't nag on every click
-    }
-    if (!warned) {
-      try {
-        localStorage.setItem('zw-sound-warned', '1');
-      } catch {
-        /* private mode */
-      }
-      Social.toast('Cards make a click sound — check your volume; it starts with your next click');
-      return;
-    }
     clickSound.currentTime = 0;
     clickSound.play().catch(() => {
       /* autoplay policy or missing file — silence is fine */
