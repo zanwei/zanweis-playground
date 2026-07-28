@@ -291,12 +291,18 @@
       win.style.transformOrigin = '0 0';
       win.style.transition = 'none';
       win.style.transform = flipTransform(first, last);
+      // Corners must match the card at takeoff (the scaled-down window's
+      // visual radius would otherwise read too tight); eased back after
+      // landing by the base border-radius transition.
+      const scaleStart = first.width / last.width;
+      win.style.borderRadius = `${Math.min(32, Math.round(tokenMs('--radius', 10) / scaleStart))}px`;
       void win.offsetWidth;
       win.style.transition = '';
       win.style.transform = '';
       morphTimer = setTimeout(() => {
         win.classList.remove('is-morphing');
         win.style.transformOrigin = '';
+        win.style.borderRadius = ''; // ease home to the resting 12px
         if (openItem !== item) return;
         if (!item.embed) byModal.frame.src = playgroundUrl(item);
         // inert invalidates style for the whole shell subtree (8 iframe
@@ -321,40 +327,57 @@
 
   function closePlayground() {
     if (!openItem) return;
-    const source = !reduceMotion.matches && cardMediaFor(openItem.slug);
+    const item = openItem;
+    const source = !reduceMotion.matches && cardMediaFor(item.slug);
     openItem = null;
     clearTimeout(morphTimer);
 
     const win = byModal.window;
     if (source) {
-      // Reverse flight: mask content (like the open flight), then fade out
-      // while shrinking back toward the card.
-      win.classList.add('is-morphing');
+      // Reverse flight, matched-geometry style: the SAME surface rides home
+      // fully opaque with its content aboard — figma cards carry the card's
+      // exact thumbnail, demos keep their live view (the mild stretch is
+      // what sells "same element"). Only the chrome chips hide.
+      win.classList.add('is-returning');
       const first = layoutRect(win);
       const target = source.getBoundingClientRect();
+      // Static radius compensation: corners must MATCH THE CARD at landing.
+      const scale = target.width / first.width;
+      win.style.borderRadius = `${Math.min(32, Math.round(tokenMs('--radius', 10) / scale))}px`;
+      if (item.embed) {
+        // The embed's viewer chrome would stretch badly — swap to the
+        // thumbnail (the card's own pixels) for the flight, instantly.
+        byModal.frame.style.transition = 'none';
+        byModal.frame.style.opacity = '0';
+        byModal.thumb.hidden = false;
+        byModal.body.classList.remove('is-live');
+      }
       win.style.transformOrigin = '0 0';
       win.style.transform = flipTransform(target, first);
     }
     byModal.root.classList.add('is-closing');
     byModal.root.classList.remove('is-open');
-    // The return flight runs the full --duration-fast; hide only after it
-    // lands on the card (iOS-style: the window visibly goes home).
+    // The return flight runs the full --duration-fast; hide right at landing,
+    // where the window exactly overlays the near-identical card.
     closeTimer = setTimeout(() => {
       byModal.root.hidden = true;
       byModal.root.classList.remove('is-closing');
       byModal.frame.src = 'about:blank';
+      byModal.frame.style.transition = '';
+      byModal.frame.style.opacity = '';
       byModal.thumb.hidden = true;
       byModal.thumb.removeAttribute('src');
       byModal.body.classList.remove('is-live');
-      win.classList.remove('is-morphing');
+      win.classList.remove('is-morphing', 'is-returning');
       win.style.transform = '';
       win.style.transformOrigin = '';
+      win.style.borderRadius = '';
       // Un-inert after landing (same shell-wide style invalidation as open),
       // and only then hand focus back — focus() on an inert subtree is a no-op.
       shell.inert = false;
       lastFocus?.focus({ preventScroll: true });
       lastFocus = null;
-    }, fastMs() + 60);
+    }, fastMs() + 40);
 
     if (location.hash) history.replaceState(null, '', location.pathname + location.search);
     presence?.focus(null);
