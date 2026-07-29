@@ -169,6 +169,14 @@ html.revealing {
 
 html.booting .sheet,
 html.revealing .sheet {
+  /* Keep the promoted drawer viewport-sized. Without this clip, the
+     composited layer spans the full masonry document and is expensive to
+     raster/retile while it moves on production-density displays. */
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  contain: layout paint;
+  will-change: transform;
   z-index: 1001;
 }
 

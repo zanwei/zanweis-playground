@@ -653,11 +653,14 @@ const Social = (() => {
   bulletLayer.className = 'bullet-layer';
   document.body.appendChild(bulletLayer);
 
-  let bulletsOn = false;
+  // Start with the display enabled for new visitors, while preserving an
+  // explicit choice made with the toggle on an earlier visit.
+  let bulletsOn = true;
   try {
-    bulletsOn = localStorage.getItem('zw-bullets') === '1';
+    const storedBulletMode = localStorage.getItem('zw-bullets');
+    if (storedBulletMode !== null) bulletsOn = storedBulletMode === '1';
   } catch {
-    /* private mode: default off */
+    /* private mode: keep the default on */
   }
 
   const CLOSE_SVG = `<svg width="10" height="10" viewBox="0 0 24 24" aria-hidden="true">
@@ -812,25 +815,44 @@ const Social = (() => {
     document.body.appendChild(barEl);
     wireBulletButton(barEl.querySelector('#bullet-toggle'));
 
+    let composing = false;
+    const syncSendState = () => {
+      barSend.disabled = composing || barInput.value.trim() === '';
+    };
+
     const doSend = () => {
+      // A click or synthetic invocation during IME composition must not send
+      // the unconfirmed candidate text.
+      if (composing) return;
       const text = barInput.value.trim();
       if (!text) return;
       presence?.say(text);
       spawnBullet(text, true);
       if (!bulletsOn) showToast('Message sent — turn on Bullet screen to see it here');
       barInput.value = '';
-      barSend.disabled = true;
+      syncSendState();
       barInput.focus({ preventScroll: true });
     };
 
-    barInput.addEventListener('input', () => {
-      barSend.disabled = barInput.value.trim() === '';
+    barInput.addEventListener('compositionstart', () => {
+      composing = true;
+      syncSendState();
     });
+    barInput.addEventListener('compositionend', () => {
+      composing = false;
+      syncSendState();
+    });
+    barInput.addEventListener('input', syncSendState);
     barInput.addEventListener('keydown', (e) => {
+      // Enter confirms a Chinese/Japanese/Korean IME candidate. Chromium and
+      // Firefox expose isComposing; keyCode 229 covers Safari's event-ordering
+      // edge case where compositionend can precede this keydown.
+      if (composing || e.isComposing || e.keyCode === 229) return;
       if (e.key === 'Escape') {
         e.stopPropagation();
         closeBar();
       } else if (e.key === 'Enter') {
+        e.preventDefault();
         doSend();
       }
     });
@@ -850,7 +872,7 @@ const Social = (() => {
     });
   }
 
-  function openBar(instant = false) {
+  function openBar(instant = false, focus = true) {
     ensureBar();
     barOpen = true;
     barEl.hidden = false;
@@ -861,7 +883,9 @@ const Social = (() => {
       void barEl.offsetWidth;
       barEl.classList.remove('is-instant');
     }
-    barInput.focus({ preventScroll: true });
+    // The default-open composer should be visible without summoning a mobile
+    // keyboard or stealing focus. Explicit user opens still focus the field.
+    if (focus) barInput.focus({ preventScroll: true });
     syncBarTrigger();
   }
 
@@ -930,7 +954,7 @@ const Social = (() => {
 
   // Topbar hint chip: another way in, for people who never guess "/".
   chatHint?.addEventListener('click', () => toggleBar());
-  syncBarTrigger();
+  openBar(true, false);
 
   // --- wiring ---------------------------------------------------------------
 

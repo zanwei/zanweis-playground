@@ -210,11 +210,10 @@
     previewFrames.forEach(({ frame, item }, i) => {
       setTimeout(() => {
         frame.src = demoUrl(item.demo);
-      }, i * 150); // spread parses across the ~2s shuffle so it never hitches
+      }, i * 150); // spread post-reveal parses so they never share one frame
     });
   }
-  addEventListener('boot:hydrate', hydratePreviews, { once: true }); // shuffle cover
-  addEventListener('boot:done', hydratePreviews, { once: true }); // boot-skip path
+  addEventListener('boot:done', hydratePreviews, { once: true });
   setTimeout(hydratePreviews, 6500); // failsafe: boot.js never signalling
 
   function freezePreview(win) {

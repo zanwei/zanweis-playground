@@ -49,8 +49,6 @@ const MIME = {
 // Semantic color names, resolved to var(--presence-<name>) by the client —
 // the stylesheet stays the single source of truth for the actual values.
 const CURSOR_COLORS = ['orange', 'violet', 'green', 'pink', 'blue', 'amber'];
-let colorCursor = 0;
-let nextId = 1;
 
 /**
  * Scale guards. Naive relay is O(events × peers): 1000 visitors at 25
@@ -93,10 +91,40 @@ const LIKE_CARDS = new Set([
 ]);
 const CLIENT_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
-/** id -> { res, color, token, clientId, lastEvent, loc, cursorAt, metaAt, likeAt, bTokens, bAt } */
-const peers = new Map();
+/**
+ * Server-side presence is keyed by a private stable client id, while the room
+ * protocol exposes only a temporary public id. A user may temporarily own
+ * several transport connections (refresh overlap, EventSource reconnect, or
+ * multiple tabs), but appears once in rosters and counts.
+ *
+ * token -> { res, token, user }
+ * private client id -> { clientId, id: temporary public id, color,
+ *                        connections, lastEvent, loc, rate-limit state }
+ */
+const connections = new Map();
+const users = new Map();
+let activitySequence = 0;
 /** card slug -> stable anonymous client IDs that currently like it. */
 const likesByCard = new Map([...LIKE_CARDS].map((card) => [card, new Set()]));
+
+function colorForPublicId(publicId) {
+  let hash = 2166136261;
+  for (let i = 0; i < publicId.length; i++) {
+    hash ^= publicId.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return CURSOR_COLORS[(hash >>> 0) % CURSOR_COLORS.length];
+}
+
+function newPublicId() {
+  let id;
+  do {
+    // "." is deliberately outside CLIENT_ID_RE, so a public room id can
+    // never be replayed as the private ?client= aggregation credential.
+    id = `p.${crypto.randomUUID()}`;
+  } while ([...users.values()].some((user) => user.id === id));
+  return id;
+}
 
 function clientIdFor(req) {
   let candidate = '';
@@ -118,27 +146,109 @@ function likesSnapshot(clientId) {
   return { counts, mine };
 }
 
-function evict(id, peer) {
-  peers.delete(id);
-  try {
-    peer.res.destroy();
-  } catch {
-    /* already gone */
+function connectionRecords(user) {
+  const records = [];
+  for (const token of user.connections) {
+    const connection = connections.get(token);
+    if (connection) records.push(connection);
+  }
+  return records;
+}
+
+function syncUserState(user) {
+  const records = connectionRecords(user);
+
+  let latestCursor = null;
+  let latestCursorSeq = -1;
+  let nextFocus = null;
+  let nextFocusSeq = -1;
+  let nextSpray = false;
+  for (const connection of records) {
+    if (!connection.idle && connection.lastEvent && connection.cursorSeq > latestCursorSeq) {
+      latestCursor = connection.lastEvent;
+      latestCursorSeq = connection.cursorSeq;
+    }
+    if (connection.focus && connection.focusSeq > nextFocusSeq) {
+      nextFocus = connection.focus;
+      nextFocusSeq = connection.focusSeq;
+    }
+    if (connection.spray) nextSpray = true;
+  }
+
+  const nextIdle = records.every((connection) => connection.idle);
+  if (latestCursor !== user.lastEvent) {
+    user.lastEvent = latestCursor;
+    pendingCursors.delete(user.id);
+    if (latestCursor) {
+      broadcast({ ...latestCursor, color: user.color }, user.id);
+    }
+  }
+  if (nextIdle && !user.idle) {
+    user.lastEvent = null;
+    pendingCursors.delete(user.id);
+    broadcast({ t: 'idle', id: user.id }, user.id);
+  }
+  user.idle = nextIdle;
+
+  if (nextFocus !== user.focus) {
+    user.focus = nextFocus;
+    broadcast({ t: 'focus', id: user.id, card: nextFocus, color: user.color }, user.id);
+  }
+  if (nextSpray !== user.spray) {
+    user.spray = nextSpray;
+    broadcast({ t: 'spray', id: user.id, on: nextSpray ? 1 : 0 }, user.id);
   }
 }
 
-function broadcast(payload, exceptId) {
+function dropConnection(token, connection, destroy = false) {
+  // close/error can arrive more than once, and an old connection can close
+  // after a replacement is already live. Only remove this exact connection.
+  if (connections.get(token) !== connection) return;
+  connections.delete(token);
+
+  const { user } = connection;
+  user.connections.delete(token);
+  if (destroy) {
+    try {
+      connection.res.destroy();
+    } catch {
+      /* already gone */
+    }
+  }
+
+  if (user.connections.size > 0) {
+    syncUserState(user);
+    return;
+  }
+
+  // A user leaves only with their final connection. The object-identity guard
+  // prevents a delayed close from deleting a newly created generation.
+  if (users.get(user.clientId) !== user) return;
+  users.delete(user.clientId);
+  pendingCursors.delete(user.id);
+  if (user.spray) broadcast({ t: 'spray', id: user.id, on: 0 }, user.id);
+  broadcast({ t: 'leave', id: user.id });
+  countDirty = true;
+}
+
+function broadcast(payload, exceptUserId) {
   const line = `data: ${JSON.stringify(payload)}\n\n`;
-  for (const [id, peer] of peers) {
-    if (id === exceptId) continue;
+  const failed = [];
+  for (const [token, connection] of connections) {
+    if (connection.user.id === exceptUserId) continue;
     // A consumer that stopped reading would buffer this process into the
     // ground — cut it loose; its EventSource reconnects when it recovers.
-    if (peer.res.writableLength > SLOW_LIMIT) {
-      evict(id, peer);
+    if (connection.res.writableLength > SLOW_LIMIT) {
+      failed.push([token, connection]);
       continue;
     }
-    peer.res.write(line);
+    try {
+      connection.res.write(line);
+    } catch {
+      failed.push([token, connection]);
+    }
   }
+  for (const [token, connection] of failed) dropConnection(token, connection, true);
 }
 
 // Like SETs are acknowledged immediately to every live tab sharing the
@@ -146,14 +256,22 @@ function broadcast(payload, exceptId) {
 // burst costs one room-wide frame instead of one fanout per event.
 function publishLike(card, count, clientId, on, changed) {
   if (changed) pendingLikeCounts.set(card, count);
-  for (const [id, peer] of peers) {
-    if (peer.clientId !== clientId) continue;
-    if (peer.res.writableLength > SLOW_LIMIT) {
-      evict(id, peer);
+  const failed = [];
+  for (const [token, connection] of connections) {
+    if (connection.user.clientId !== clientId) continue;
+    if (connection.res.writableLength > SLOW_LIMIT) {
+      failed.push([token, connection]);
       continue;
     }
-    peer.res.write(`data: ${JSON.stringify({ t: 'like', card, count, on })}\n\n`);
+    try {
+      connection.res.write(
+        `data: ${JSON.stringify({ t: 'like', card, count, on })}\n\n`
+      );
+    } catch {
+      failed.push([token, connection]);
+    }
   }
+  for (const [token, connection] of failed) dropConnection(token, connection, true);
 }
 
 // --- room tick: coalesced cursors and like counts, flushed as frames -------
@@ -164,7 +282,7 @@ let countDirty = false;
 let tickTimer = null;
 
 function tick() {
-  if (peers.size === 0) {
+  if (connections.size === 0) {
     clearInterval(tickTimer);
     tickTimer = null;
     pendingCursors.clear();
@@ -173,7 +291,7 @@ function tick() {
   }
   if (countDirty) {
     countDirty = false;
-    broadcast({ t: 'count', n: peers.size });
+    broadcast({ t: 'count', n: users.size });
   }
   if (pendingLikeCounts.size) {
     const counts = Object.fromEntries(pendingLikeCounts);
@@ -183,8 +301,7 @@ function tick() {
   if (pendingCursors.size === 0) return;
   const list = [];
   for (const [id, c] of pendingCursors) {
-    const peer = peers.get(id);
-    if (peer) list.push({ id, a: c.a, fx: c.fx, fy: c.fy, color: peer.color });
+    list.push({ id, a: c.a, fx: c.fx, fy: c.fy, color: c.color });
     pendingCursors.delete(id);
     if (list.length >= TICK_CURSOR_CAP) break; // the rest ride the next tick
   }
@@ -209,19 +326,38 @@ function bulletBudgetOk(now) {
 }
 
 function presenceStream(req, res) {
-  if (peers.size >= MAX_PEERS) {
+  if (connections.size >= MAX_PEERS) {
     // Full house. The client's EventSource fails before "hello" and falls
     // back to tab-local presence — the page keeps working.
     res.writeHead(503, { 'Retry-After': '30' }).end();
     return;
   }
 
-  const id = String(nextId++);
-  const color = CURSOR_COLORS[colorCursor++ % CURSOR_COLORS.length];
   const clientId = clientIdFor(req);
   // The POST channel proves identity with this token, so one visitor can't
-  // puppeteer another's cursor by guessing their (sequential) id.
+  // puppeteer another's cursor by copying their stable public id.
   const token = crypto.randomBytes(12).toString('hex');
+  const now = Date.now();
+  let user = users.get(clientId);
+  const isNewUser = !user;
+  if (!user) {
+    const publicId = newPublicId();
+    user = {
+      clientId,
+      id: publicId,
+      color: colorForPublicId(publicId),
+      connections: new Set(),
+      lastEvent: null,
+      loc: null,
+      idle: true,
+      focus: null,
+      spray: false,
+      likeAt: 0,
+      bTokens: BULLET_BURST,
+      bAt: now,
+    };
+    users.set(clientId, user);
+  }
 
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -233,50 +369,57 @@ function presenceStream(req, res) {
   // Tell the newcomer who they are and who is already here. The detailed
   // snapshot caps out — beyond it the count alone tells the story.
   const roster = [];
-  for (const [pid, p] of peers) {
+  for (const [otherClientId, other] of users) {
+    if (otherClientId === clientId) continue;
     if (roster.length >= ROSTER_CAP) break;
-    roster.push({ id: pid, color: p.color, last: p.lastEvent || null, loc: p.loc || null });
+    roster.push({
+      id: other.id,
+      color: other.color,
+      last: other.lastEvent || null,
+      loc: other.loc || null,
+    });
   }
+
+  const connection = {
+    res,
+    token,
+    user,
+    idle: true,
+    lastEvent: null,
+    cursorSeq: 0,
+    cursorAt: 0,
+    focus: null,
+    focusSeq: 0,
+    focusRateAt: 0,
+    locAt: 0,
+    spray: false,
+    sprayAt: 0,
+  };
+  connections.set(token, connection);
+  user.connections.add(token);
+  const ping = setInterval(() => res.write(': ping\n\n'), 25000);
+  res.once('close', () => {
+    clearInterval(ping);
+    dropConnection(token, connection);
+  });
+
   res.write(
     `data: ${JSON.stringify({
       t: 'hello',
-      id,
-      color,
+      id: user.id,
+      color: user.color,
       token,
-      clientId,
       peers: roster,
       likes: likesSnapshot(clientId),
     })}\n\n`
   );
 
-  const now = Date.now();
-  peers.set(id, {
-    res,
-    color,
-    token,
-    clientId,
-    lastEvent: null,
-    loc: null,
-    cursorAt: 0,
-    metaAt: 0,
-    likeAt: 0,
-    bTokens: BULLET_BURST,
-    bAt: now,
-  });
   ensureTick();
-  broadcast({ t: 'join', id, color }, id);
-  countDirty = true; // coalesced into the next tick
-  res.write(`data: ${JSON.stringify({ t: 'count', n: peers.size })}\n\n`);
-
-  const ping = setInterval(() => res.write(': ping\n\n'), 25000);
-
-  req.on('close', () => {
-    clearInterval(ping);
-    peers.delete(id);
-    pendingCursors.delete(id);
-    broadcast({ t: 'leave', id });
-    countDirty = true;
-  });
+  if (isNewUser) {
+    broadcast({ t: 'join', id: user.id, color: user.color }, user.id);
+    countDirty = true; // coalesced into the next tick
+  }
+  res.write(`data: ${JSON.stringify({ t: 'count', n: users.size })}\n\n`);
 }
 
 function presenceEvent(req, res) {
@@ -289,8 +432,9 @@ function presenceEvent(req, res) {
     try {
       const msg = JSON.parse(body);
       const id = String(msg.id);
-      const peer = peers.get(id);
-      if (!peer || peer.token !== msg.token) {
+      const connection = connections.get(String(msg.token || ''));
+      const user = connection?.user;
+      if (!user || user.id !== id) {
         res.writeHead(204).end();
         return;
       }
@@ -298,32 +442,38 @@ function presenceEvent(req, res) {
 
       switch (msg.t) {
         case 'cursor': {
-          const realtime = peers.size <= REALTIME_MAX;
+          const realtime = users.size <= REALTIME_MAX;
           const floor = realtime ? CURSOR_MIN_RT_MS : CURSOR_MIN_MS;
-          if (now - peer.cursorAt < floor) break; // over the floor: drop
-          peer.cursorAt = now;
+          if (now - connection.cursorAt < floor) break; // over the floor: drop
+          connection.cursorAt = now;
           const entry = { a: msg.a, fx: msg.fx, fy: msg.fy };
-          peer.lastEvent = { id, t: 'cursor', ...entry };
+          const event = { id, t: 'cursor', ...entry };
+          connection.idle = false;
+          connection.lastEvent = event;
+          connection.cursorSeq = ++activitySequence;
+          user.idle = false;
+          user.lastEvent = event;
           if (realtime) {
             // Small room: fan-out is cheap, latency is what matters.
-            broadcast({ t: 'cursor', id, ...entry, color: peer.color }, id);
+            pendingCursors.delete(id);
+            broadcast({ t: 'cursor', id, ...entry, color: user.color }, id);
           } else {
-            pendingCursors.set(id, entry); // coalesced — the tick fans out
+            pendingCursors.set(id, { ...entry, color: user.color }); // coalesced
           }
           break;
         }
         case 'bullet': {
           // Refill, then spend a token; drop silently when dry or over the
           // global budget. Senders still see their own bullet locally.
-          const refill = Math.floor((now - peer.bAt) / BULLET_REFILL_MS);
+          const refill = Math.floor((now - user.bAt) / BULLET_REFILL_MS);
           if (refill > 0) {
-            peer.bTokens = Math.min(BULLET_BURST, peer.bTokens + refill);
-            peer.bAt = now;
+            user.bTokens = Math.min(BULLET_BURST, user.bTokens + refill);
+            user.bAt = now;
           }
-          if (peer.bTokens <= 0 || !bulletBudgetOk(now)) break;
-          peer.bTokens--;
+          if (user.bTokens <= 0 || !bulletBudgetOk(now)) break;
+          user.bTokens--;
           if (typeof msg.text !== 'string' || !msg.text) break;
-          broadcast({ t: 'bullet', id, text: msg.text.slice(0, 120), color: peer.color }, id);
+          broadcast({ t: 'bullet', id, text: msg.text.slice(0, 120), color: user.color }, id);
           break;
         }
         case 'focus':
@@ -332,39 +482,48 @@ function presenceEvent(req, res) {
           // sets are rate-floored; clears always pass.
           const isClear = msg.t === 'focus' && !msg.card;
           if (!isClear) {
-            if (now - peer.metaAt < META_MIN_MS) break;
-            peer.metaAt = now;
+            const rateKey = msg.t === 'focus' ? 'focusRateAt' : 'locAt';
+            if (now - connection[rateKey] < META_MIN_MS) break;
+            connection[rateKey] = now;
           }
-          if (msg.t === 'loc') peer.loc = msg.loc || null;
-          const { token: _token, ...relay } = msg;
-          broadcast({ ...relay, id, color: peer.color }, id);
+          if (msg.t === 'focus') {
+            connection.focus = msg.card || null;
+            connection.focusSeq = ++activitySequence;
+            syncUserState(user);
+          } else {
+            user.loc = msg.loc || null;
+            broadcast({ t: 'loc', loc: user.loc, id, color: user.color }, id);
+          }
           break;
         }
         case 'idle': {
-          pendingCursors.delete(id);
-          broadcast({ t: 'idle', id }, id);
+          if (!connection.idle) {
+            connection.idle = true;
+            syncUserState(user);
+          }
           break;
         }
         case 'spray': {
           // On/off state only (positions ride the cursor channel); own floor
           // so held-spray heartbeats can't be used as a broadcast amplifier.
-          if (now - (peer.sprayAt || 0) < 250) break;
-          peer.sprayAt = now;
-          broadcast({ t: 'spray', id, on: msg.on ? 1 : 0 }, id);
+          if (now - connection.sprayAt < 250) break;
+          connection.sprayAt = now;
+          connection.spray = !!msg.on;
+          syncUserState(user);
           break;
         }
         case 'like': {
           if (!LIKE_CARDS.has(msg.card) || typeof msg.on !== 'boolean') break;
-          if (now - peer.likeAt < LIKE_MIN_MS) break;
-          peer.likeAt = now;
+          if (now - user.likeAt < LIKE_MIN_MS) break;
+          user.likeAt = now;
           const clients = likesByCard.get(msg.card);
-          const had = clients.has(peer.clientId);
+          const had = clients.has(user.clientId);
           const changed = had !== msg.on;
           if (changed) {
-            if (msg.on) clients.add(peer.clientId);
-            else clients.delete(peer.clientId);
+            if (msg.on) clients.add(user.clientId);
+            else clients.delete(user.clientId);
           }
-          publishLike(msg.card, clients.size, peer.clientId, msg.on, changed);
+          publishLike(msg.card, clients.size, user.clientId, msg.on, changed);
           break;
         }
       }

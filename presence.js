@@ -45,7 +45,11 @@ const Presence = (() => {
     'affine-hero',
     'bridge',
   ]);
-  const LIKE_CLIENT_KEY = 'zw-like-client-v1';
+  // Private anonymous browser identity shared by presence and likes. Keeping
+  // the original storage key preserves existing visitors across the protocol
+  // upgrade. The server uses it to merge refreshes/tabs but never fans it out;
+  // peers see only a temporary server-generated public id.
+  const CLIENT_KEY = 'zw-like-client-v1';
   const LIKE_MINE_KEY = 'zw-like-mine-v1';
   const CLIENT_ID_RE = /^[A-Za-z0-9_-]{16,64}$/;
 
@@ -54,22 +58,31 @@ const Presence = (() => {
 
   const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
 
-  function stableLikeClientId() {
+  function stableClientId() {
     try {
-      const stored = localStorage.getItem(LIKE_CLIENT_KEY);
+      const stored = localStorage.getItem(CLIENT_KEY);
       if (stored && CLIENT_ID_RE.test(stored)) return stored;
       const created =
         crypto.randomUUID?.() ||
         `${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}_${Math.random()
           .toString(36)
           .slice(2)}`;
-      localStorage.setItem(LIKE_CLIENT_KEY, created);
+      localStorage.setItem(CLIENT_KEY, created);
       return created;
     } catch {
       return `${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}_${Math.random()
         .toString(36)
         .slice(2)}`;
     }
+  }
+
+  function colorForId(id) {
+    let hash = 2166136261;
+    for (let i = 0; i < id.length; i++) {
+      hash ^= id.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return COLORS[(hash >>> 0) % COLORS.length];
   }
 
   function storedLikes() {
@@ -240,7 +253,7 @@ const Presence = (() => {
     const cursors = new Map(); // peerId -> RemoteCursor
     const focuses = new Map(); // peerId -> { card, color }
     const locations = new Map(); // peerId -> { color, loc }
-    const likeClientId = stableLikeClientId();
+    const clientId = stableClientId();
     const likeCounts = new Map();
     const myLikes = storedLikes();
     const pendingLikes = new Map(); // card -> desired boolean, until server ack
@@ -387,7 +400,35 @@ const Presence = (() => {
       if (locations.delete(id)) notifyLocations();
     }
 
+    function dropAllPeers() {
+      const ids = new Set([
+        ...cursors.keys(),
+        ...focuses.keys(),
+        ...locations.keys(),
+      ]);
+      for (const id of ids) dropPeer(id);
+    }
+
     function handle(msg) {
+      // A stable user can have more than one live transport (overlapping
+      // refreshes and multiple tabs). The server fans room frames to every
+      // connection, so defensively ignore our own public presence id here.
+      // Like messages are intentionally delivered to all of a user's tabs.
+      const ownPresence =
+        msg.id != null && myId != null && String(msg.id) === String(myId);
+      if (
+        ownPresence &&
+        (msg.t === 'cursor' ||
+          msg.t === 'focus' ||
+          msg.t === 'loc' ||
+          msg.t === 'bullet' ||
+          msg.t === 'spray' ||
+          msg.t === 'idle' ||
+          msg.t === 'leave')
+      ) {
+        return;
+      }
+
       switch (msg.t) {
         case 'cursor':
           peerCursor(msg.id, msg.color)?.setTarget(msg.a, msg.fx, msg.fy);
@@ -475,7 +516,7 @@ const Presence = (() => {
       try {
         const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
         ws = new WebSocket(
-          `${scheme}://${location.host}/presence/ws?client=${encodeURIComponent(likeClientId)}`
+          `${scheme}://${location.host}/presence/ws?client=${encodeURIComponent(clientId)}`
         );
       } catch {
         startSSE();
@@ -491,10 +532,12 @@ const Presence = (() => {
           myId = msg.id;
           if (onSelf) onSelf({ color: cssColor(msg.color), transport: 'ws' });
           for (const peer of msg.peers || []) {
+            if (String(peer.id) === String(myId)) continue;
             if (peer.last) handle({ ...peer.last, color: peer.color });
             if (peer.loc) handle({ t: 'loc', id: peer.id, color: peer.color, loc: peer.loc });
           }
-          // The connection IS the identity — no id/token in the payload.
+          // The socket authenticates this connection; hello's id is the
+          // stable public user identity shared by reconnects and sibling tabs.
           send = (payload) => {
             if (ws.readyState === 1) ws.send(JSON.stringify(payload));
           };
@@ -525,8 +568,7 @@ const Presence = (() => {
         }
         // Unlike EventSource, WS has no built-in retry: clear unreachable
         // peers and reconnect with a fresh socket.
-        for (const id of [...cursors.keys()]) dropPeer(id);
-        for (const id of [...focuses.keys()]) dropPeer(id);
+        dropAllPeers();
         transport = 'pending';
         send = () => {};
         if (onCount) onCount(1);
@@ -536,7 +578,7 @@ const Presence = (() => {
 
     function startSSE() {
       const es = new EventSource(
-        `/presence/stream?client=${encodeURIComponent(likeClientId)}`
+        `/presence/stream?client=${encodeURIComponent(clientId)}`
       );
       let opened = false;
       let myToken = null;
@@ -550,6 +592,7 @@ const Presence = (() => {
           myToken = msg.token;
           if (onSelf) onSelf({ color: cssColor(msg.color), transport: 'sse' });
           for (const peer of msg.peers || []) {
+            if (String(peer.id) === String(myId)) continue;
             if (peer.last) handle({ ...peer.last, color: peer.color });
             if (peer.loc) handle({ t: 'loc', id: peer.id, color: peer.color, loc: peer.loc });
           }
@@ -582,8 +625,7 @@ const Presence = (() => {
         // A dropped stream is recoverable: leave EventSource alone so the
         // browser reconnects (it re-issues hello with a fresh id/token), and
         // just clear peers who are no longer reachable.
-        for (const id of [...cursors.keys()]) dropPeer(id);
-        for (const id of [...focuses.keys()]) dropPeer(id);
+        dropAllPeers();
         transport = 'pending';
         send = () => {};
         if (onCount) onCount(1);
@@ -605,8 +647,13 @@ const Presence = (() => {
         return;
       }
       transport = 'tabs';
-      myId = Math.random().toString(36).slice(2, 10);
-      const myColor = COLORS[Math.abs([...myId].reduce((a, ch) => a + ch.charCodeAt(0), 0)) % COLORS.length];
+      // BroadcastChannel is tab-local presence, not the server's user
+      // aggregation boundary. Give each tab a fresh public id and never put
+      // the private stable client id onto the channel.
+      myId =
+        crypto.randomUUID?.() ||
+        `${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+      const myColor = colorForId(myId);
       if (onSelf) onSelf({ color: cssColor(myColor), transport: 'tabs' });
       const alive = new Map(); // id -> lastSeen
 
@@ -637,7 +684,6 @@ const Presence = (() => {
       send = (payload) =>
         bc.postMessage({
           id: myId,
-          clientId: likeClientId,
           color: myColor,
           loc: loc || null,
           ...payload,

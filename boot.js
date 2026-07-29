@@ -40,9 +40,22 @@
   const grid = document.getElementById('boot-grid');
   const sheet = document.getElementById('sheet'); // the full-bleed drawer surface
   const brandFace = document.querySelector('.brand-face path');
+  let finished = false;
+  let shuffleTimer = null;
+  let settleTimer = null;
+  let revealTimer = null;
+  let revealFallback = null;
+  let landHandler = null;
 
   function releaseEverything() {
+    if (finished) return;
+    finished = true;
     clearTimeout(window.__bootFailsafe);
+    clearInterval(shuffleTimer);
+    clearTimeout(settleTimer);
+    clearTimeout(revealTimer);
+    clearTimeout(revealFallback);
+    if (landHandler) sheet?.removeEventListener('transitionend', landHandler);
     html.classList.remove('booting', 'revealing');
     boot?.setAttribute('data-hidden', '');
     scrollTo(0, 0); // never land holding an offset from the doubled document
@@ -58,7 +71,6 @@
     () => {
       if (html.classList.contains('booting') || html.classList.contains('revealing')) {
         releaseEverything();
-        scrollTo(0, 0);
       }
     },
     { passive: true }
@@ -132,33 +144,28 @@
   }
 
   function reveal() {
+    if (finished) return;
     clearTimeout(window.__bootFailsafe);
     boot.setAttribute('data-done', ''); // center scale-down + overlay 0 -> 100
-    setTimeout(() => {
+    revealTimer = setTimeout(() => {
+      if (finished) return;
       html.classList.remove('booting');
       html.classList.add('revealing'); // the drawer pulls up from the bottom
       // transitionend BUBBLES: a child transition finishing mid-flight (the
       // topbar hairline, a chip) must not cut the drawer short — only the
       // sheet's own transform counts.
-      const land = (e) => {
+      landHandler = (e) => {
         if (e && (e.target !== sheet || e.propertyName !== 'transform')) return;
-        sheet.removeEventListener('transitionend', land);
-        clearTimeout(fallback);
-        html.classList.remove('revealing');
-        boot.setAttribute('data-hidden', '');
-        // Any offset picked up while the document was double-height (a late
-        // scroll restore, an anchor) would leave the landed page mid-air.
-        scrollTo(0, 0);
-        dispatchEvent(new Event('boot:done')); // previews hydrate from here
+        releaseEverything();
       };
-      sheet.addEventListener('transitionend', land);
-      const fallback = setTimeout(land, REVEAL + 200);
+      sheet.addEventListener('transitionend', landHandler);
+      revealFallback = setTimeout(landHandler, REVEAL + 200);
     }, OVERLAY_LEAD);
   }
 
   if (reduce) {
     settle();
-    setTimeout(() => {
+    settleTimer = setTimeout(() => {
       boot.setAttribute('data-done', '');
       releaseEverything();
     }, 200);
@@ -167,17 +174,17 @@
 
   let step = 0;
   setStep(0);
-  // The sheet is opaque for the whole shuffle — perfect cover for preview
-  // iframes to fetch and parse, so the gallery lands already alive.
-  dispatchEvent(new Event('boot:hydrate'));
-  const timer = setInterval(() => {
+  // Keep preview documents parked until the drawer lands. Loading and
+  // running their entrance loops here competes with the reveal on slower
+  // production devices; app.js hydrates them from boot:done instead.
+  shuffleTimer = setInterval(() => {
     step++;
     if (step < 4) {
       setStep(step); // steps 1-3 complete the one loop through the moods
       return;
     }
-    clearInterval(timer);
+    clearInterval(shuffleTimer);
     settle();
-    setTimeout(reveal, SETTLE_HOLD);
+    settleTimer = setTimeout(reveal, SETTLE_HOLD);
   }, BEAT);
 })();
