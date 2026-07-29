@@ -1058,6 +1058,11 @@ html.revealing .sheet {
   transition: none;
 }
 
+.playground-window.is-returning .pg-video {
+  opacity: 0;
+  transition: none;
+}
+
 .playground.is-closing .playground-window.is-returning {
   opacity: 0;
   filter: none;
@@ -1184,7 +1189,8 @@ html.revealing .sheet {
 }
 
 /* Static artwork, or a landing placeholder that yields to a live demo. */
-.pg-thumb {
+.pg-thumb,
+.pg-video {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -1197,8 +1203,15 @@ html.revealing .sheet {
     filter var(--duration-fast) var(--ease-in-out, ease-in-out);
 }
 
-.pg-thumb[hidden] {
+.pg-thumb[hidden],
+.pg-video[hidden] {
   display: none;
+}
+
+.pg-video {
+  object-fit: contain;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-in-out, ease-in-out);
 }
 
 .playground-body.is-static .playground-frame {
@@ -1214,7 +1227,8 @@ html.revealing .sheet {
 }
 
 /* masked during the flight like everything else — only a solid surface flies */
-.playground-window.is-morphing .pg-thumb {
+.playground-window.is-morphing .pg-thumb,
+.playground-window.is-morphing .pg-video {
   opacity: 0;
   transition: none;
 }
@@ -1230,6 +1244,10 @@ html.revealing .sheet {
   opacity: 0;
   filter: blur(var(--blur-small));
   pointer-events: none;
+}
+
+.playground-body.is-video.is-live .pg-video {
+  opacity: 1;
 }
 
 /* ------------------------------------------------------------- fountain */

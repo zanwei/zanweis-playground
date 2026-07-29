@@ -24,6 +24,7 @@
     body: document.getElementById('pg-body'),
     frame: document.getElementById('pg-frame'),
     thumb: document.getElementById('pg-thumb'),
+    video: document.getElementById('pg-video'),
   };
 
   const tokenMs = (name, fallback) =>
@@ -489,11 +490,60 @@
     byModal.frame.style.removeProperty('transition');
   }
 
+  function resetPlaygroundVideo() {
+    const video = byModal.video;
+    video.pause();
+    video.hidden = true;
+    video.removeAttribute('src');
+    video.removeAttribute('poster');
+    video.load();
+    byModal.body.classList.remove('is-video', 'is-live');
+  }
+
+  function preparePlaygroundVideo(item) {
+    resetPlaygroundVideo();
+    if (item.type !== 'video' || !item.video) return;
+    byModal.video.src = item.video;
+    if (item.poster) byModal.video.poster = item.poster;
+    byModal.video.hidden = false;
+    byModal.body.classList.add('is-video');
+  }
+
+  function playPlaygroundVideo(item, epoch = playgroundEpoch) {
+    if (
+      item.type !== 'video' ||
+      !item.video ||
+      reduceMotion.matches ||
+      epoch !== playgroundEpoch ||
+      openItem !== item
+    ) {
+      return;
+    }
+    const video = byModal.video;
+    video.play()
+      .then(() => {
+        if (epoch !== playgroundEpoch || openItem !== item) {
+          video.pause();
+          return;
+        }
+        byModal.body.classList.add('is-live');
+      })
+      .catch(() => {
+        /* muted autoplay can still be declined; keep the poster visible */
+      });
+  }
+
+  function pausePlaygroundVideo(showPoster = false) {
+    byModal.video.pause();
+    if (showPoster) byModal.body.classList.remove('is-live');
+  }
+
   function finishPlaygroundOpen(item, epoch) {
     morphTimer = null;
     if (epoch !== playgroundEpoch || openItem !== item) return;
     clearFlightArtifacts();
     if (item.demo) replacePlaygroundFrame(item, epoch);
+    playPlaygroundVideo(item, epoch);
     // inert invalidates style for the whole shell subtree (8 iframe
     // documents) — never spend that on a flight-critical frame.
     shell.inert = true;
@@ -528,6 +578,7 @@
     byModal.body.classList.remove('is-live');
     byModal.body.classList.toggle('is-static', Boolean(item.image));
     byModal.body.classList.toggle('has-thumb', Boolean(item.thumb));
+    preparePlaygroundVideo(item);
 
     // Static explorations keep this image for the whole visit. A demo may use
     // the same layer as a landing placeholder before its iframe is ready.
@@ -611,6 +662,7 @@
       // aria-modal only claims the background is out of reach; inert makes it so.
       shell.inert = true;
       byModal.close.focus({ preventScroll: true });
+      playPlaygroundVideo(item, epoch);
     }
 
     if (location.hash.slice(1) !== item.slug) {
@@ -625,6 +677,7 @@
     playgroundEpoch += 1;
     const source = !reduceMotion.matches && cardMediaFor(item.slug);
     openItem = null;
+    pausePlaygroundVideo(true);
     clearTimeout(morphTimer);
     morphTimer = null;
 
@@ -667,7 +720,8 @@
       byModal.thumb.hidden = true;
       byModal.thumb.removeAttribute('src');
       byModal.thumb.alt = '';
-      byModal.body.classList.remove('has-thumb', 'is-live', 'is-static');
+      resetPlaygroundVideo();
+      byModal.body.classList.remove('has-thumb', 'is-live', 'is-static', 'is-video');
       clearFlightArtifacts();
       // Un-inert after landing (same shell-wide style invalidation as open),
       // and only then hand focus back — focus() on an inert subtree is a no-op.
@@ -684,6 +738,16 @@
   byModal.backdrop.addEventListener('click', closePlayground);
   addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && openItem) closePlayground();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (openItem?.type !== 'video') return;
+    if (document.hidden) pausePlaygroundVideo();
+    else playPlaygroundVideo(openItem);
+  });
+  reduceMotion.addEventListener('change', (event) => {
+    if (openItem?.type !== 'video') return;
+    if (event.matches) pausePlaygroundVideo(true);
+    else playPlaygroundVideo(openItem);
   });
 
   function syncToHash() {
