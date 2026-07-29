@@ -361,23 +361,58 @@ html.revealing .sheet {
   touch-action: none; /* horizontal drags rotate the globe, never scroll */
 }
 
-/* One label only — a white tooltip over the viewer's marker. */
+/* Marker labels share one quiet tooltip treatment. Cobe owns the moving 1px
+   anchor; the chip only animates composited properties around that point. */
 .globe-chip {
   position: absolute;
   left: 0;
   top: 0;
-  transform: translate(-50%, calc(-100% - 10px));
+  visibility: hidden;
+  opacity: 0;
+  filter: blur(var(--blur-small));
+  transform: translate(-50%, calc(-100% - 8px)) translateY(2px) scale(0.97);
   padding: 5px 11px;
   border-radius: var(--radius-pill);
   background: var(--bg);
   color: var(--ink);
   font-size: 12px;
   font-weight: 500;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  pointer-events: none;
   box-shadow:
     0 0 0 1px rgba(17, 17, 20, 0.08),
     0 2px 6px rgba(17, 17, 20, 0.08),
     0 8px 20px rgba(17, 17, 20, 0.12);
+  transition:
+    opacity var(--duration-quick) var(--ease-smooth-out),
+    transform var(--duration-quick) var(--ease-smooth-out),
+    filter var(--duration-quick) var(--ease-smooth-out),
+    visibility 0s linear var(--duration-quick);
+}
+
+.globe-chip.is-visible {
+  visibility: visible;
+  opacity: 1;
+  filter: blur(0);
+  transform: translate(-50%, calc(-100% - 10px)) translateY(0) scale(1);
+  transition-delay: 0s;
+}
+
+.globe-chip.is-exiting {
+  visibility: visible;
+  opacity: 0;
+  filter: blur(var(--blur-small));
+  transform: translate(-50%, calc(-100% - 8px)) translateY(2px) scale(0.97);
+  transition-delay: 0s;
+}
+
+@starting-style {
+  .globe-chip.is-visible {
+    opacity: 0;
+    filter: blur(var(--blur-small));
+    transform: translate(-50%, calc(-100% - 8px)) translateY(2px) scale(0.97);
+  }
 }
 
 .online-dot {
@@ -1462,8 +1497,17 @@ html.revealing .sheet {
   .bullet-flow-path,
   .chat-hint,
   .globe-pop,
+  .globe-chip,
   .online {
     transition-duration: 1ms;
+  }
+
+  .globe-chip,
+  .globe-chip.is-visible,
+  .globe-chip.is-exiting {
+    filter: none;
+    transform: translate(-50%, calc(-100% - 10px));
+    transition-delay: 0s;
   }
 
   .chat-dock {

@@ -3,11 +3,11 @@
  *
  * Location is inferred from the timezone — continent-level on purpose. No
  * permission prompt, no network call, nothing precise enough to identify
- * anyone. Peers share {lat, lng, label} over the presence channel.
+ * anyone. Peers share {lat, lng, label, continent} over the presence channel.
  *
- * The globe is cobe (github.com/shuding/cobe, vendored). Markers carry each
- * visitor's presence color; cobe's anchor divs position the tooltips, so
- * labels track the spinning globe with zero per-frame JS here.
+ * The globe is cobe (github.com/shuding/cobe, vendored). The viewer keeps
+ * their presence color; remote visitors share one blue marker per continent.
+ * Cobe's anchor divs keep every label attached to the spinning globe.
  */
 'use strict';
 
@@ -67,6 +67,103 @@ const Social = (() => {
     Antarctica: [-78, 0, 'Antarctica'],
   };
 
+  const CONTINENTS = {
+    AF: { lat: 5, lng: 20 },
+    AN: { lat: -78, lng: 0 },
+    AS: { lat: 34, lng: 95 },
+    EU: { lat: 51, lng: 15 },
+    NA: { lat: 43, lng: -102 },
+    OC: { lat: -25, lng: 135 },
+    SA: { lat: -15, lng: -60 },
+    XX: { lat: 0, lng: -20 },
+  };
+  const CONTINENT_NAMES = {
+    AF: 'Africa',
+    AN: 'Antarctica',
+    AS: 'Asia',
+    EU: 'Europe',
+    NA: 'North America',
+    OC: 'Oceania',
+    SA: 'South America',
+    XX: 'Unknown',
+  };
+  const CONTINENT_ORDER = ['NA', 'SA', 'EU', 'AF', 'AS', 'OC', 'AN', 'XX'];
+  const SOUTH_AMERICA_TZ =
+    /^(?:America\/(?:Argentina\/.+|Araguaina|Asuncion|Bahia|Belem|Boa_Vista|Bogota|Buenos_Aires|Campo_Grande|Caracas|Catamarca|Cayenne|Cordoba|Coyhaique|Cuiaba|Eirunepe|Fortaleza|Guayaquil|Guyana|Jujuy|La_Paz|Lima|Maceio|Manaus|Mendoza|Montevideo|Noronha|Paramaribo|Porto_Velho|Punta_Arenas|Recife|Rio_Branco|Rosario|Santarem|Santiago|Sao_Paulo)|Atlantic\/(?:South_Georgia|Stanley)|Pacific\/(?:Easter|Galapagos))$/;
+  const TIMEZONE_CONTINENT_EXCEPTIONS = {
+    'Atlantic/Azores': 'EU',
+    'Atlantic/Canary': 'EU',
+    'Atlantic/Faeroe': 'EU',
+    'Atlantic/Faroe': 'EU',
+    'Atlantic/Jan_Mayen': 'EU',
+    'Atlantic/Madeira': 'EU',
+    'Atlantic/Reykjavik': 'EU',
+    'Atlantic/Bermuda': 'NA',
+    'Atlantic/Cape_Verde': 'AF',
+    'Atlantic/St_Helena': 'AF',
+    'Indian/Antananarivo': 'AF',
+    'Indian/Comoro': 'AF',
+    'Indian/Mahe': 'AF',
+    'Indian/Mauritius': 'AF',
+    'Indian/Mayotte': 'AF',
+    'Indian/Reunion': 'AF',
+    'Indian/Chagos': 'AS',
+    'Indian/Christmas': 'AS',
+    'Indian/Cocos': 'AS',
+    'Indian/Maldives': 'AS',
+    'Indian/Kerguelen': 'AN',
+    'Pacific/Honolulu': 'NA',
+  };
+
+  function continentForTimeZone(tz) {
+    if (SOUTH_AMERICA_TZ.test(tz)) return 'SA';
+    if (TIMEZONE_CONTINENT_EXCEPTIONS[tz]) return TIMEZONE_CONTINENT_EXCEPTIONS[tz];
+    return (
+      {
+        Africa: 'AF',
+        America: 'NA',
+        Antarctica: 'AN',
+        Asia: 'AS',
+        Australia: 'OC',
+        Europe: 'EU',
+        Pacific: 'OC',
+      }[tz.split('/')[0]] || 'XX'
+    );
+  }
+
+  function continentCode(loc) {
+    const raw = String(loc?.continent || loc?.label || '')
+      .trim()
+      .toLowerCase();
+
+    if (raw === 'af' || raw.includes('africa')) return 'AF';
+    if (raw === 'an' || raw.includes('antarct')) return 'AN';
+    if (raw === 'as' || raw === 'asia') return 'AS';
+    if (raw === 'eu' || raw.includes('europe')) return 'EU';
+    if (raw === 'na' || raw.includes('north america')) return 'NA';
+    if (
+      raw === 'oc' ||
+      raw.includes('oceania') ||
+      raw.includes('australia') ||
+      raw.includes('pacific')
+    ) {
+      return 'OC';
+    }
+    if (raw === 'sa' || raw.includes('south america')) return 'SA';
+    if (raw === 'xx' || raw.includes('atlantic') || raw.includes('indian ocean')) return 'XX';
+
+    const lat = Number(loc?.lat);
+    const lng = Number(loc?.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return 'XX';
+    if (lat <= -60) return 'AN';
+    if (lng < -25) return lat < 13 ? 'SA' : 'NA';
+    if (lng >= -25 && lng <= 55 && lat >= -38 && lat < 37) return 'AF';
+    if (lng >= -25 && lng <= 45 && lat >= 37) return 'EU';
+    if (lng >= 105 && lat < 0) return 'OC';
+    if (lng >= 25) return 'AS';
+    return 'XX';
+  }
+
   function coarseLocation() {
     let tz = '';
     try {
@@ -74,8 +171,22 @@ const Social = (() => {
     } catch {
       /* fall through to the ocean */
     }
-    const hit = TZ[tz] || REGION[tz.split('/')[0]] || [20, 0, 'the Atlantic Ocean'];
-    return { lat: hit[0], lng: hit[1], label: hit[2] };
+    const inferredContinent = continentForTimeZone(tz);
+    const center = CONTINENTS[inferredContinent];
+    const hit =
+      TZ[tz] ||
+      (inferredContinent !== 'XX' && [
+        center.lat,
+        center.lng,
+        CONTINENT_NAMES[inferredContinent],
+      ]) ||
+      REGION[tz.split('/')[0]] ||
+      [20, 0, 'the Atlantic Ocean'];
+    const loc = { lat: hit[0], lng: hit[1], label: hit[2] };
+    return {
+      ...loc,
+      continent: inferredContinent === 'XX' ? continentCode(loc) : inferredContinent,
+    };
   }
 
   const location = coarseLocation();
@@ -111,6 +222,7 @@ const Social = (() => {
   let closeTimer = null;
   let phi = 0;
   let focusPhi = 0;
+  let globeTheta = 0.1;
 
   // From the cobe docs: angles that bring [lat, lng] to the front.
   const focusAngles = (lat, lng) => [
@@ -118,62 +230,179 @@ const Social = (() => {
     (lat * Math.PI) / 180,
   ];
 
-  function markerList() {
-    const markers = [
-      { id: 'self', location: [location.lat, location.lng], size: 0.09, color: rgb01(hexOf(selfColor) === '#111114' ? '#f5560c' : hexOf(selfColor)) },
+  function desiredMarkerEntries() {
+    const selfHex = hexOf(selfColor) === '#111114' ? PRESENCE_HEX.orange : hexOf(selfColor);
+    const entries = [
+      {
+        id: 'self',
+        lat: location.lat,
+        lng: location.lng,
+        label: 'You’re here',
+        size: 0.09,
+        color: rgb01(selfHex),
+      },
     ];
-    peerLocations.forEach((p, i) => {
-      // Past ~60 dots the globe is visually saturated — and each marker is
-      // a cobe anchor div cobe repositions every frame.
-      if (!p.loc || markers.length > 60) return;
-      markers.push({
-        id: `peer-${i}`,
-        location: [p.loc.lat, p.loc.lng],
-        size: 0.07,
-        color: rgb01(hexOf(p.color)),
+    const groups = new Map();
+
+    for (const peer of peerLocations) {
+      if (!peer?.loc) continue;
+      const code = continentCode(peer.loc);
+      groups.set(code, (groups.get(code) || 0) + 1);
+    }
+
+    for (const code of CONTINENT_ORDER) {
+      const count = groups.get(code);
+      if (!count) continue;
+      const center = CONTINENTS[code];
+      entries.push({
+        id: `continent-${code.toLowerCase()}`,
+        lat: center.lat,
+        lng: center.lng,
+        label: code === 'XX' ? `Other · ${count}` : `${code} · ${count}`,
+        size: Math.min(0.13, 0.07 + Math.log2(count + 1) * 0.012),
+        color: rgb01(PRESENCE_HEX.blue),
       });
-    });
-    return markers;
+    }
+
+    return entries;
   }
 
-  let chipRefs = []; // [{ chip, lng }] — visibility computed from phi per frame
+  const CHIP_EXIT_MS = 150;
+  const renderedMarkers = new Map();
+  let chipRefs = new Map(); // marker id -> { chip, lat, lng }
   let chipRetry = null;
 
-  // cobe creates its anchor divs on its own schedule; retry until they exist.
+  function markerList() {
+    return [...renderedMarkers.values()].map(({ id, lat, lng, size, color }) => ({
+      id,
+      location: [lat, lng],
+      size,
+      color,
+    }));
+  }
+
+  function refreshGlobeMarkers() {
+    if (!globe) return;
+    globe.update({ markers: markerList() });
+    attachChipsSoon();
+  }
+
+  function finishMarkerExit(id, entry) {
+    if (renderedMarkers.get(id) !== entry || !entry.exiting) return;
+    renderedMarkers.delete(id);
+    chipRefs.delete(id);
+    refreshGlobeMarkers();
+  }
+
+  function syncMarkerEntries({ animateExits = popOpen && !reduceMotion.matches } = {}) {
+    const desired = new Map(desiredMarkerEntries().map((entry) => [entry.id, entry]));
+
+    for (const [id, next] of desired) {
+      const current = renderedMarkers.get(id);
+      if (current) {
+        clearTimeout(current.exitTimer);
+        Object.assign(current, next, { exiting: false, exitTimer: null });
+        chipRefs.get(id)?.chip.classList.remove('is-exiting');
+      } else {
+        renderedMarkers.set(id, { ...next, exiting: false, exitTimer: null });
+      }
+    }
+
+    for (const [id, current] of renderedMarkers) {
+      if (desired.has(id) || current.exiting) continue;
+      if (!animateExits) {
+        clearTimeout(current.exitTimer);
+        renderedMarkers.delete(id);
+        chipRefs.delete(id);
+        continue;
+      }
+      current.exiting = true;
+      chipRefs.get(id)?.chip.classList.add('is-exiting');
+      current.exitTimer = setTimeout(
+        () => finishMarkerExit(id, current),
+        CHIP_EXIT_MS + 20
+      );
+    }
+
+    refreshGlobeMarkers();
+  }
+
+  function chipsAreAttached() {
+    return (
+      chipRefs.size === renderedMarkers.size &&
+      [...chipRefs.values()].every(({ chip }) => chip.isConnected)
+    );
+  }
+
+  // Cobe creates its anchor divs on its own schedule; retry until every
+  // stable marker id has a matching anchor.
   function attachChipsSoon() {
     clearInterval(chipRetry);
+    attachChips();
+    if (chipsAreAttached()) return;
     let tries = 0;
     chipRetry = setInterval(() => {
       attachChips();
-      if (chipRefs.length > 0 || ++tries > 16 || !popOpen) {
+      if (chipsAreAttached() || ++tries > 16 || !popOpen) {
         clearInterval(chipRetry);
       }
     }, 120);
   }
 
   function attachChips() {
-    // Only the viewer gets a label — "You're here" riding the self anchor
-    // (markers[0]). Peers stay as plain colored dots on the sphere.
-    chipRefs = [];
-    const anchors = [...wrap.querySelectorAll('div')].filter((d) => d.style.width === '1px');
-    const anchor = anchors[0];
-    if (!anchor) return;
-    anchor.querySelector('.globe-chip')?.remove();
-    const chip = document.createElement('span');
-    chip.className = 'globe-chip';
-    chip.textContent = 'You’re here';
-    chip.style.visibility = 'hidden';
-    anchor.appendChild(chip);
-    chipRefs.push({ chip, lng: location.lng });
+    const anchors = new Map();
+    for (const candidate of wrap.querySelectorAll('div')) {
+      const name = candidate.style.getPropertyValue('anchor-name');
+      if (name.startsWith('--cobe-')) anchors.set(name.slice('--cobe-'.length), candidate);
+    }
+
+    const nextRefs = new Map();
+    for (const entry of renderedMarkers.values()) {
+      const anchor = anchors.get(entry.id);
+      if (!anchor) continue;
+      let record = chipRefs.get(entry.id);
+      if (!record) {
+        const chip = document.createElement('span');
+        chip.className = 'globe-chip';
+        chip.dataset.marker = entry.id;
+        record = { chip, lat: entry.lat, lng: entry.lng };
+      }
+      record.lat = entry.lat;
+      record.lng = entry.lng;
+      record.chip.textContent = entry.label;
+      record.chip.classList.toggle('is-exiting', entry.exiting);
+      if (record.chip.parentElement !== anchor) anchor.appendChild(record.chip);
+      nextRefs.set(entry.id, record);
+    }
+    chipRefs = nextRefs;
     updateChipVisibility(); // correct visibility before the first spin frame
   }
 
-  function updateChipVisibility() {
-    // A chip shows while its marker is on the front hemisphere.
+  function markerFront(lat, lng) {
+    const latRad = (lat * Math.PI) / 180;
+    const lngRad = (lng * Math.PI) / 180 - Math.PI;
+    const cosLat = Math.cos(latRad);
+    const x = -cosLat * Math.cos(lngRad);
+    const y = Math.sin(latRad);
+    const z = cosLat * Math.sin(lngRad);
     const shown = phi + dragOffset;
-    for (const { chip, lng } of chipRefs) {
-      const front = Math.cos(shown - focusAngles(0, lng)[0]);
-      chip.style.visibility = front > 0.12 ? 'visible' : 'hidden';
+    return (
+      -Math.sin(shown) * Math.cos(globeTheta) * x +
+      Math.sin(globeTheta) * y +
+      Math.cos(shown) * Math.cos(globeTheta) * z
+    );
+  }
+
+  function updateChipVisibility() {
+    // Class changes, rather than discrete visibility writes, give chips a
+    // soft blur/fade as their marker rotates behind the globe.
+    for (const [id, { chip, lat, lng }] of chipRefs) {
+      const entry = renderedMarkers.get(id);
+      if (!entry || entry.exiting) {
+        chip.classList.remove('is-visible');
+        continue;
+      }
+      chip.classList.toggle('is-visible', markerFront(lat, lng) > 0.12);
     }
   }
 
@@ -183,8 +412,17 @@ const Social = (() => {
     clearTimeout(closeTimer);
     pop.hidden = false;
     void pop.offsetWidth;
+    pop.classList.remove('is-closing');
     pop.classList.add('is-open');
     btn.setAttribute('aria-expanded', 'true');
+
+    // Reopening during the close transition revives the existing WebGL
+    // instance instead of orphaning it behind a newly-created canvas.
+    if (globe) {
+      syncMarkerEntries({ animateExits: false });
+      spin();
+      return;
+    }
 
     const size = 280 * Math.min(2, devicePixelRatio || 1);
     const canvas = document.createElement('canvas');
@@ -196,13 +434,15 @@ const Social = (() => {
     [focusPhi] = focusAngles(location.lat, location.lng);
     phi = focusPhi;
     const [, theta] = focusAngles(location.lat, location.lng);
+    globeTheta = Math.max(0.1, theta * 0.7);
+    syncMarkerEntries({ animateExits: false });
 
     globe = window.createGlobe(canvas, {
       devicePixelRatio: Math.min(2, devicePixelRatio || 1),
       width: size,
       height: size,
       phi,
-      theta: Math.max(0.1, theta * 0.7),
+      theta: globeTheta,
       dark: 0,
       diffuse: 1.2,
       mapSamples: 14000,
@@ -275,10 +515,17 @@ const Social = (() => {
     closeTimer = setTimeout(() => {
       pop.classList.remove('is-closing');
       pop.hidden = true;
+      clearInterval(chipRetry);
+      for (const entry of renderedMarkers.values()) clearTimeout(entry.exitTimer);
+      renderedMarkers.clear();
+      chipRefs.clear();
       globe?.destroy(); // the globe never burns frames while closed
       globe = null;
       wrap.replaceChildren();
-    }, 180);
+      dragging = null;
+      dragOffset = 0;
+      dragTarget = 0;
+    }, reduceMotion.matches ? 0 : 180);
   }
 
   if (btn && pop) {
@@ -570,14 +817,11 @@ const Social = (() => {
     },
     onSelf({ color }) {
       selfColor = color;
-      if (globe) globe.update({ markers: markerList() });
+      syncMarkerEntries();
     },
     onLocations(list) {
-      peerLocations = list;
-      if (globe) {
-        globe.update({ markers: markerList() });
-        attachChipsSoon();
-      }
+      peerLocations = Array.isArray(list) ? list : [];
+      syncMarkerEntries();
     },
     onBullet({ text }) {
       spawnBullet(text, false);
