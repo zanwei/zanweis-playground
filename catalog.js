@@ -210,12 +210,14 @@ const VIDEO_FILES = [
 ];
 
 for (const item of VIDEO_FILES) {
-  const video = `assets/video/${item.slug}.webm`;
+  const previewVideo = `assets/video/${item.slug}-card-v1.webm`;
+  const video = `assets/video/${item.slug}-full-v1.webm`;
   const poster = `assets/video/${item.slug}.webp`;
   CATALOG.push({
     slug: item.slug,
     title: item.title,
     type: 'video',
+    previewVideo,
     video,
     poster,
     image: poster,

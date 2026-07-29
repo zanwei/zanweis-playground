@@ -12,15 +12,49 @@
  */
 'use strict';
 
+import { WorkerEntrypoint } from 'cloudflare:workers';
+
 export default {
-  fetch(request, env) {
+  async fetch(request, env, ctx) {
     const { pathname } = new URL(request.url);
     if (pathname === '/presence/ws') {
       return env.PRESENCE.get(env.PRESENCE.idFromName('lobby')).fetch(request);
     }
+    if (pathname.startsWith('/assets/video/') && pathname.endsWith('.webm')) {
+      const response = await ctx.exports.VideoAsset.fetch(request);
+      if (!['GET', 'HEAD'].includes(request.method)) return response;
+
+      // Workers Cache creates 206/416 responses after the named entrypoint
+      // returns its cacheable 200. Restore the capability header at this
+      // uncached gateway layer because the slicing layer does not retain it.
+      const headers = new Headers(response.headers);
+      headers.set('Accept-Ranges', 'bytes');
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+      });
+    }
     return env.ASSETS.fetch(request);
   },
 };
+
+export class VideoAsset extends WorkerEntrypoint {
+  async fetch(request) {
+    const response = await this.env.ASSETS.fetch(request);
+    if (!response.ok || !['GET', 'HEAD'].includes(request.method)) return response;
+
+    const headers = new Headers(response.headers);
+    headers.set('Accept-Ranges', 'bytes');
+    headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+    headers.set('Cloudflare-CDN-Cache-Control', 'public, max-age=31536000, immutable');
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
+}
 
 const CURSOR_COLORS = ['orange', 'violet', 'green', 'pink', 'blue', 'amber'];
 
