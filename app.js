@@ -24,6 +24,7 @@
     body: document.getElementById('pg-body'),
     frame: document.getElementById('pg-frame'),
     thumb: document.getElementById('pg-thumb'),
+    video: document.getElementById('pg-video'),
   };
 
   const tokenMs = (name, fallback) =>
@@ -226,16 +227,83 @@
     };
   }
 
-  // Card-click sound. Keep its gain capped and treat playback as best-effort.
-  const clickSound = new Audio('assets/click.m4a'); // AAC: 9.6KB vs the 192KB wav
+  // Card-click sound. Decode the tiny asset before the first interaction so
+  // the first card gets the same low-latency response as every later card.
+  // HTMLAudio stays as a compatibility fallback when Web Audio is unavailable.
+  const CLICK_SOUND_URL = 'assets/click.m4a'; // AAC: 9.6KB vs the 192KB wav
+  const clickSound = new Audio(CLICK_SOUND_URL);
   clickSound.preload = 'auto';
   clickSound.volume = 0.5;
+  clickSound.load();
 
-  function playClick() {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  let clickAudioContext = null;
+  let clickAudioGain = null;
+  let clickAudioBuffer = null;
+
+  if (AudioContextClass) {
+    try {
+      clickAudioContext = new AudioContextClass({ latencyHint: 'interactive' });
+      clickAudioGain = clickAudioContext.createGain();
+      clickAudioGain.gain.value = 0.5;
+      clickAudioGain.connect(clickAudioContext.destination);
+      fetch(CLICK_SOUND_URL)
+        .then((response) => {
+          if (!response.ok) throw new Error(`Click sound returned ${response.status}`);
+          return response.arrayBuffer();
+        })
+        .then((data) => clickAudioContext.decodeAudioData(data))
+        .then((buffer) => {
+          clickAudioBuffer = buffer;
+        })
+        .catch(() => {
+          clickAudioBuffer = null;
+        });
+    } catch {
+      clickAudioContext = null;
+      clickAudioGain = null;
+    }
+  }
+
+  function unlockClickAudio() {
+    if (clickAudioContext?.state !== 'suspended') return;
+    clickAudioContext.resume().catch(() => {
+      /* the HTMLAudio fallback remains available */
+    });
+  }
+
+  addEventListener('pointerdown', unlockClickAudio, { capture: true, passive: true });
+  addEventListener(
+    'keydown',
+    (event) => {
+      if (event.key === 'Enter' || event.key === ' ') unlockClickAudio();
+    },
+    { capture: true }
+  );
+
+  function playFallbackClick() {
     clickSound.currentTime = 0;
     clickSound.play().catch(() => {
       /* autoplay policy or missing file — silence is fine */
     });
+  }
+
+  function playClick() {
+    if (clickAudioContext && clickAudioGain && clickAudioBuffer) {
+      const start = () => {
+        const source = clickAudioContext.createBufferSource();
+        source.buffer = clickAudioBuffer;
+        source.connect(clickAudioGain);
+        source.start();
+      };
+      if (clickAudioContext.state === 'running') {
+        start();
+      } else {
+        clickAudioContext.resume().then(start).catch(playFallbackClick);
+      }
+      return;
+    }
+    playFallbackClick();
   }
 
   function buildCard(item, index) {
@@ -489,11 +557,60 @@
     byModal.frame.style.removeProperty('transition');
   }
 
+  function resetPlaygroundVideo() {
+    const video = byModal.video;
+    video.pause();
+    video.hidden = true;
+    video.removeAttribute('src');
+    video.removeAttribute('poster');
+    video.load();
+    byModal.body.classList.remove('is-video', 'is-live');
+  }
+
+  function preparePlaygroundVideo(item) {
+    resetPlaygroundVideo();
+    if (item.type !== 'video' || !item.video) return;
+    byModal.video.src = item.video;
+    if (item.poster) byModal.video.poster = item.poster;
+    byModal.video.hidden = false;
+    byModal.body.classList.add('is-video');
+  }
+
+  function playPlaygroundVideo(item, epoch = playgroundEpoch) {
+    if (
+      item.type !== 'video' ||
+      !item.video ||
+      reduceMotion.matches ||
+      epoch !== playgroundEpoch ||
+      openItem !== item
+    ) {
+      return;
+    }
+    const video = byModal.video;
+    video.play()
+      .then(() => {
+        if (epoch !== playgroundEpoch || openItem !== item) {
+          video.pause();
+          return;
+        }
+        byModal.body.classList.add('is-live');
+      })
+      .catch(() => {
+        /* muted autoplay can still be declined; keep the poster visible */
+      });
+  }
+
+  function pausePlaygroundVideo(showPoster = false) {
+    byModal.video.pause();
+    if (showPoster) byModal.body.classList.remove('is-live');
+  }
+
   function finishPlaygroundOpen(item, epoch) {
     morphTimer = null;
     if (epoch !== playgroundEpoch || openItem !== item) return;
     clearFlightArtifacts();
     if (item.demo) replacePlaygroundFrame(item, epoch);
+    playPlaygroundVideo(item, epoch);
     // inert invalidates style for the whole shell subtree (8 iframe
     // documents) — never spend that on a flight-critical frame.
     shell.inert = true;
@@ -528,6 +645,7 @@
     byModal.body.classList.remove('is-live');
     byModal.body.classList.toggle('is-static', Boolean(item.image));
     byModal.body.classList.toggle('has-thumb', Boolean(item.thumb));
+    preparePlaygroundVideo(item);
 
     // Static explorations keep this image for the whole visit. A demo may use
     // the same layer as a landing placeholder before its iframe is ready.
@@ -611,6 +729,7 @@
       // aria-modal only claims the background is out of reach; inert makes it so.
       shell.inert = true;
       byModal.close.focus({ preventScroll: true });
+      playPlaygroundVideo(item, epoch);
     }
 
     if (location.hash.slice(1) !== item.slug) {
@@ -625,6 +744,7 @@
     playgroundEpoch += 1;
     const source = !reduceMotion.matches && cardMediaFor(item.slug);
     openItem = null;
+    pausePlaygroundVideo(true);
     clearTimeout(morphTimer);
     morphTimer = null;
 
@@ -667,7 +787,8 @@
       byModal.thumb.hidden = true;
       byModal.thumb.removeAttribute('src');
       byModal.thumb.alt = '';
-      byModal.body.classList.remove('has-thumb', 'is-live', 'is-static');
+      resetPlaygroundVideo();
+      byModal.body.classList.remove('has-thumb', 'is-live', 'is-static', 'is-video');
       clearFlightArtifacts();
       // Un-inert after landing (same shell-wide style invalidation as open),
       // and only then hand focus back — focus() on an inert subtree is a no-op.
@@ -684,6 +805,16 @@
   byModal.backdrop.addEventListener('click', closePlayground);
   addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && openItem) closePlayground();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (openItem?.type !== 'video') return;
+    if (document.hidden) pausePlaygroundVideo();
+    else playPlaygroundVideo(openItem);
+  });
+  reduceMotion.addEventListener('change', (event) => {
+    if (openItem?.type !== 'video') return;
+    if (event.matches) pausePlaygroundVideo(true);
+    else playPlaygroundVideo(openItem);
   });
 
   function syncToHash() {

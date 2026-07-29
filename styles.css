@@ -1058,6 +1058,11 @@ html.revealing .sheet {
   transition: none;
 }
 
+.playground-window.is-returning .pg-video {
+  opacity: 0;
+  transition: none;
+}
+
 .playground.is-closing .playground-window.is-returning {
   opacity: 0;
   filter: none;
@@ -1184,7 +1189,8 @@ html.revealing .sheet {
 }
 
 /* Static artwork, or a landing placeholder that yields to a live demo. */
-.pg-thumb {
+.pg-thumb,
+.pg-video {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -1197,8 +1203,15 @@ html.revealing .sheet {
     filter var(--duration-fast) var(--ease-in-out, ease-in-out);
 }
 
-.pg-thumb[hidden] {
+.pg-thumb[hidden],
+.pg-video[hidden] {
   display: none;
+}
+
+.pg-video {
+  object-fit: contain;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-in-out, ease-in-out);
 }
 
 .playground-body.is-static .playground-frame {
@@ -1214,7 +1227,8 @@ html.revealing .sheet {
 }
 
 /* masked during the flight like everything else — only a solid surface flies */
-.playground-window.is-morphing .pg-thumb {
+.playground-window.is-morphing .pg-thumb,
+.playground-window.is-morphing .pg-video {
   opacity: 0;
   transition: none;
 }
@@ -1230,6 +1244,10 @@ html.revealing .sheet {
   opacity: 0;
   filter: blur(var(--blur-small));
   pointer-events: none;
+}
+
+.playground-body.is-video.is-live .pg-video {
+  opacity: 1;
 }
 
 /* ------------------------------------------------------------- fountain */
@@ -1423,39 +1441,6 @@ html.revealing .sheet {
 
 .chat-dock.is-instant {
   transition: none;
-}
-
-/* Status toast above the dock — sits over the composer's own gap so it never
-   pushes the dock. Rises in, leaves without moving (exits stay softer). */
-.chat-toast {
-  position: fixed;
-  bottom: 80px;
-  left: 50%;
-  z-index: 951;
-  translate: -50% 0;
-  max-width: min(420px, 84vw);
-  padding: 7px 14px;
-  border-radius: var(--radius-pill);
-  background: var(--bg);
-  color: var(--ink);
-  font-size: 12.5px;
-  text-align: center;
-  text-wrap: balance;
-  box-shadow:
-    0 0 0 1px rgba(17, 17, 20, 0.07),
-    0 2px 6px rgba(17, 17, 20, 0.06),
-    0 10px 28px rgba(17, 17, 20, 0.14);
-  pointer-events: none;
-  opacity: 0;
-  transform: translateY(8px);
-  transition:
-    opacity var(--duration-fast) var(--ease-smooth-out),
-    transform var(--duration-fast) var(--ease-smooth-out);
-}
-
-.chat-toast.is-on {
-  opacity: 1;
-  transform: translateY(0);
 }
 
 /* Bullet-storm overflow: a quiet counter instead of a wall of capsules. */
@@ -1776,12 +1761,6 @@ html.revealing .sheet {
   .chat-bar input {
     width: 100%;
   }
-
-  .chat-toast {
-    bottom: calc(
-      146px + env(safe-area-inset-bottom) + var(--composer-keyboard-offset, 0px)
-    );
-  }
 }
 
 /* On phones the playground takes the whole screen: a 20px matte around a
@@ -1839,7 +1818,6 @@ html.revealing .sheet {
   .card-media,
   .card-frame iframe,
   .pg-thumb,
-  .chat-toast,
   .brand,
   .topbar,
   .boot,

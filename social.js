@@ -747,34 +747,11 @@ const Social = (() => {
     });
   }
 
-  // Small status toast above the dock (e.g. "sent while display is off").
-  let toastEl = null;
-  let toastTimer = null;
-
-  function showToast(text) {
-    if (!toastEl) {
-      toastEl = document.createElement('div');
-      toastEl.className = 'chat-toast';
-      toastEl.setAttribute('role', 'status');
-      document.body.appendChild(toastEl);
-    }
-    toastEl.textContent = text;
-    toastEl.hidden = false;
-    void toastEl.offsetWidth;
-    toastEl.classList.add('is-on');
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => {
-      toastEl.classList.remove('is-on');
-      setTimeout(() => {
-        if (!toastEl.classList.contains('is-on')) toastEl.hidden = true;
-      }, 220);
-    }, 2400);
-  }
-
   // Bottom input bar.
   let barEl = null;
   let barInput = null;
   let barSend = null;
+  let bulletModeButton = null;
   let barOpen = false;
   const compactComposer = matchMedia('(max-width: 720px)');
   const COMPOSER_LAYOUT_MS = 220;
@@ -935,9 +912,12 @@ const Social = (() => {
       if (composing) return;
       const text = barInput.value.trim();
       if (!text) return;
+      // Sending is an explicit request to see the message. Turn the display
+      // back on before broadcasting so the same action also renders the
+      // sender's bullet instead of requiring a second click.
+      if (!bulletsOn) setBulletMode(true);
       presence?.say(text);
       spawnBullet(text, true);
-      if (!bulletsOn) showToast('Message sent — turn on Bullet screen to see it here');
       barInput.value = '';
       syncSendState();
       barInput.focus({ preventScroll: true });
@@ -1044,23 +1024,30 @@ const Social = (() => {
 
   // The whole button is the global display state; its moving lanes explain
   // what "on" means without nesting a second switch inside the control.
+  function renderBulletMode() {
+    if (!bulletModeButton) return;
+    bulletModeButton.setAttribute('aria-pressed', String(bulletsOn));
+    bulletModeButton.title = bulletsOn ? 'Hide Bullet screen' : 'Show Bullet screen';
+  }
+
+  function setBulletMode(next) {
+    bulletsOn = Boolean(next);
+    try {
+      localStorage.setItem('zw-bullets', bulletsOn ? '1' : '0');
+    } catch {
+      /* fine */
+    }
+    if (!bulletsOn) clearBulletDisplay();
+    renderBulletMode();
+  }
+
   function wireBulletButton(button) {
     if (!button) return;
-    const render = () => {
-      button.setAttribute('aria-pressed', String(bulletsOn));
-      button.title = bulletsOn ? 'Hide Bullet screen' : 'Show Bullet screen';
-    };
+    bulletModeButton = button;
     button.addEventListener('click', () => {
-      bulletsOn = !bulletsOn;
-      try {
-        localStorage.setItem('zw-bullets', bulletsOn ? '1' : '0');
-      } catch {
-        /* fine */
-      }
-      if (!bulletsOn) clearBulletDisplay();
-      render();
+      setBulletMode(!bulletsOn);
     });
-    render();
+    renderBulletMode();
   }
 
   // Topbar hint chip: another way in, for people who never guess "/".
