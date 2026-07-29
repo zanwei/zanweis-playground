@@ -776,7 +776,110 @@ const Social = (() => {
   let barInput = null;
   let barSend = null;
   let barOpen = false;
+  const compactComposer = matchMedia('(max-width: 720px)');
+  const COMPOSER_LAYOUT_MS = 220;
+  let composerIsCompact = compactComposer.matches;
+  let composerLayout = null;
+  const composerAnimations = new WeakMap();
+  const composerFallbackTimers = new WeakMap();
   const chatHint = document.getElementById('chat-hint');
+
+  function measureComposerLayout() {
+    if (!barEl || barEl.hidden) return null;
+    const layout = new Map();
+    for (const el of barEl.querySelectorAll('.chat-bar, .bullet-mode')) {
+      const rect = el.getBoundingClientRect();
+      layout.set(el, { left: rect.left, top: rect.top });
+    }
+    return layout;
+  }
+
+  function animateComposerLayout(previous, next) {
+    if (!previous || !next || reduceMotion.matches || !barOpen) return;
+    for (const [el, from] of previous) {
+      const to = next.get(el);
+      if (!to) continue;
+      const x = from.left - to.left;
+      const y = from.top - to.top;
+      if (Math.abs(x) < 1 && Math.abs(y) < 1) continue;
+      composerAnimations.get(el)?.cancel();
+      clearTimeout(composerFallbackTimers.get(el));
+
+      if (typeof el.animate !== 'function') {
+        el.style.transition = 'none';
+        el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+        void el.offsetWidth;
+        el.style.transition = `transform ${COMPOSER_LAYOUT_MS}ms cubic-bezier(0.23, 1, 0.32, 1)`;
+        requestAnimationFrame(() => {
+          el.style.transform = 'translate3d(0, 0, 0)';
+          composerFallbackTimers.set(
+            el,
+            setTimeout(() => {
+              el.style.removeProperty('transition');
+              el.style.removeProperty('transform');
+            }, COMPOSER_LAYOUT_MS)
+          );
+        });
+        continue;
+      }
+
+      const animation = el.animate(
+        [
+          { transform: `translate3d(${x}px, ${y}px, 0)` },
+          { transform: 'translate3d(0, 0, 0)' },
+        ],
+        {
+          duration: COMPOSER_LAYOUT_MS,
+          easing: 'cubic-bezier(0.23, 1, 0.32, 1)',
+          fill: 'both',
+        }
+      );
+      composerAnimations.set(el, animation);
+      animation.finished
+        .catch(() => {})
+        .then(() => {
+          if (composerAnimations.get(el) !== animation) return;
+          animation.cancel();
+          composerAnimations.delete(el);
+        });
+    }
+  }
+
+  function syncComposerKeyboardOffset() {
+    if (!barEl) return;
+    const viewport = window.visualViewport;
+    if (!compactComposer.matches || !viewport) {
+      barEl.style.removeProperty('--composer-keyboard-offset');
+      return;
+    }
+    // On iOS, fixed elements can remain attached to the layout viewport while
+    // the visual viewport shrinks behind the software keyboard. Lift the
+    // whole composer by that covered area; browsers that already resize the
+    // layout viewport naturally resolve this to zero.
+    const covered = Math.max(0, innerHeight - viewport.height - viewport.offsetTop);
+    barEl.style.setProperty('--composer-keyboard-offset', `${Math.round(covered)}px`);
+  }
+
+  addEventListener(
+    'resize',
+    () => {
+      const nextCompact = compactComposer.matches;
+      const previous = composerLayout;
+      syncComposerKeyboardOffset();
+      if (nextCompact === composerIsCompact || !barOpen) {
+        composerIsCompact = nextCompact;
+        composerLayout = measureComposerLayout();
+        return;
+      }
+      composerIsCompact = nextCompact;
+      requestAnimationFrame(() => {
+        const next = measureComposerLayout();
+        animateComposerLayout(previous, next);
+        composerLayout = next;
+      });
+    },
+    { passive: true }
+  );
 
   function syncBarTrigger() {
     if (!chatHint) return;
@@ -791,7 +894,7 @@ const Social = (() => {
     barEl.className = 'chat-dock';
     barEl.innerHTML =
       `<div class="chat-bar">
-        <input type="text" maxlength="120" placeholder="Say something" aria-label="Bullet screen message" />
+        <input type="text" maxlength="120" placeholder="Send bullet chat" aria-label="Bullet screen message" />
         <button class="chat-send" aria-label="Send" disabled>
           <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 19V6M6 12l6-6 6 6" stroke="currentColor" stroke-width="2.2" fill="none"
@@ -814,6 +917,12 @@ const Social = (() => {
     barSend = barEl.querySelector('.chat-send');
     document.body.appendChild(barEl);
     wireBulletButton(barEl.querySelector('#bullet-toggle'));
+    window.visualViewport?.addEventListener('resize', syncComposerKeyboardOffset, {
+      passive: true,
+    });
+    window.visualViewport?.addEventListener('scroll', syncComposerKeyboardOffset, {
+      passive: true,
+    });
 
     let composing = false;
     const syncSendState = () => {
@@ -886,6 +995,8 @@ const Social = (() => {
     // The default-open composer should be visible without summoning a mobile
     // keyboard or stealing focus. Explicit user opens still focus the field.
     if (focus) barInput.focus({ preventScroll: true });
+    syncComposerKeyboardOffset();
+    composerLayout = measureComposerLayout();
     syncBarTrigger();
   }
 

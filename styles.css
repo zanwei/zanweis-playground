@@ -1751,22 +1751,42 @@ html.revealing .sheet {
 
 /* ----------------------------------------------------------- responsive */
 
-/* On phones the playground takes the whole screen: a 20px matte around a
-   scaled demo helps nobody at this size. */
-@media (max-width: 640px) {
+/* The composer becomes a small two-row control before the inline toggle
+   starts competing with the message field. Keep the display control in the
+   thumb-friendly row above, while the input remains full-width below. */
+@media (max-width: 720px) {
   .chat-dock {
-    left: 12px;
-    right: 12px;
-    bottom: calc(12px + env(safe-area-inset-bottom));
+    left: 32px;
+    right: 32px;
+    bottom: calc(
+      28px + env(safe-area-inset-bottom) + var(--composer-keyboard-offset, 0px)
+    );
     width: auto;
     translate: 0 0;
+    flex-direction: column;
+    align-items: stretch;
     gap: 6px;
+  }
+
+  .chat-dock .bullet-mode {
+    order: -1;
+    align-self: center;
   }
 
   .chat-bar input {
     width: 100%;
   }
 
+  .chat-toast {
+    bottom: calc(
+      146px + env(safe-area-inset-bottom) + var(--composer-keyboard-offset, 0px)
+    );
+  }
+}
+
+/* On phones the playground takes the whole screen: a 20px matte around a
+   scaled demo helps nobody at this size. */
+@media (max-width: 640px) {
   .playground {
     padding: 0;
   }
