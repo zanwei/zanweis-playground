@@ -1,9 +1,9 @@
 /**
  * Social layer: the online-count globe and Figma-style cursor chat.
  *
- * Location is inferred from the timezone — continent-level on purpose. No
- * permission prompt, no network call, nothing precise enough to identify
- * anyone. Peers share {lat, lng, label, continent} over the presence channel.
+ * Shared location is inferred from the timezone and remains continent-level.
+ * Opening the globe may use browser geolocation to refine only the viewer's
+ * own marker; precise coordinates never enter the presence channel.
  *
  * The globe is cobe (github.com/shuding/cobe, vendored). The viewer keeps
  * their presence color; remote visitors share one blue marker per continent.
@@ -189,7 +189,8 @@ const Social = (() => {
     };
   }
 
-  const location = coarseLocation();
+  const sharedLocation = coarseLocation();
+  const selfLocation = { ...sharedLocation };
 
   // --- presence plumbing ----------------------------------------------------
 
@@ -223,6 +224,55 @@ const Social = (() => {
   let phi = 0;
   let focusPhi = 0;
   let globeTheta = 0.1;
+  let focusTheta = 0.1;
+  let focusingSelf = false;
+  let preciseLocationState = 'idle';
+
+  function requestPreciseLocation() {
+    if (
+      preciseLocationState === 'loading' ||
+      preciseLocationState === 'ready' ||
+      preciseLocationState === 'denied' ||
+      !window.isSecureContext ||
+      !navigator.geolocation
+    ) {
+      return;
+    }
+    preciseLocationState = 'loading';
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => {
+        const lat = Number(coords.latitude);
+        const lng = Number(coords.longitude);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+          preciseLocationState = 'idle';
+          return;
+        }
+        const preciseLat = Math.max(-90, Math.min(90, lat));
+        const preciseLng = ((lng + 540) % 360) - 180;
+        Object.assign(selfLocation, {
+          lat: preciseLat,
+          lng: preciseLng,
+          label: 'Your location',
+          // Derive this from the new coordinates rather than retaining the
+          // timezone-based value copied into selfLocation at startup.
+          continent: continentCode({ lat: preciseLat, lng: preciseLng }),
+        });
+        preciseLocationState = 'ready';
+        // This changes only the local marker. The shared coarse location
+        // remains untouched so exact coordinates never leave the browser.
+        focusOnSelf({ immediate: !popOpen || !globe });
+        syncMarkerEntries({ animateExits: false });
+      },
+      (error) => {
+        preciseLocationState = error?.code === 1 ? 'denied' : 'idle';
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 8000,
+        maximumAge: 300000,
+      }
+    );
+  }
 
   // From the cobe docs: angles that bring [lat, lng] to the front.
   const focusAngles = (lat, lng) => [
@@ -230,16 +280,35 @@ const Social = (() => {
     (lat * Math.PI) / 180,
   ];
 
+  function focusOnSelf({ immediate = false } = {}) {
+    const [nextPhi, nextTheta] = focusAngles(selfLocation.lat, selfLocation.lng);
+    const turn = Math.PI * 2;
+    // Choose the nearest equivalent rotation so an async geolocation result
+    // never sends the globe the long way around.
+    focusPhi =
+      phi + ((((nextPhi - phi + Math.PI) % turn) + turn) % turn - Math.PI);
+    focusTheta = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, nextTheta));
+    dragOffset = 0;
+    dragTarget = 0;
+    focusingSelf = !immediate;
+    if (immediate) {
+      phi = focusPhi;
+      globeTheta = focusTheta;
+    }
+  }
+
   function desiredMarkerEntries() {
     const selfHex = hexOf(selfColor) === '#111114' ? PRESENCE_HEX.orange : hexOf(selfColor);
+    const selfContinent = continentCode(selfLocation);
     const entries = [
       {
         id: 'self',
-        lat: location.lat,
-        lng: location.lng,
+        lat: selfLocation.lat,
+        lng: selfLocation.lng,
         label: 'You’re here',
         size: 0.09,
         color: rgb01(selfHex),
+        placement: 'above',
       },
     ];
     const groups = new Map();
@@ -261,6 +330,7 @@ const Social = (() => {
         label: code === 'XX' ? `Other · ${count}` : `${code} · ${count}`,
         size: Math.min(0.13, 0.07 + Math.log2(count + 1) * 0.012),
         color: rgb01(PRESENCE_HEX.blue),
+        placement: code === selfContinent ? 'below' : 'above',
       });
     }
 
@@ -370,6 +440,7 @@ const Social = (() => {
       record.lat = entry.lat;
       record.lng = entry.lng;
       record.chip.textContent = entry.label;
+      record.chip.dataset.placement = entry.placement;
       record.chip.classList.toggle('is-exiting', entry.exiting);
       if (record.chip.parentElement !== anchor) anchor.appendChild(record.chip);
       nextRefs.set(entry.id, record);
@@ -431,10 +502,7 @@ const Social = (() => {
     wrap.replaceChildren(canvas);
     bindDrag(canvas);
 
-    [focusPhi] = focusAngles(location.lat, location.lng);
-    phi = focusPhi;
-    const [, theta] = focusAngles(location.lat, location.lng);
-    globeTheta = Math.max(0.1, theta * 0.7);
+    focusOnSelf({ immediate: true });
     syncMarkerEntries({ animateExits: false });
 
     globe = window.createGlobe(canvas, {
@@ -450,6 +518,7 @@ const Social = (() => {
       baseColor: [0.92, 0.92, 0.93],
       markerColor: [0.96, 0.34, 0.05],
       glowColor: [1, 1, 1],
+      scale: 1.22,
       markers: markerList(),
     });
     attachChipsSoon();
@@ -494,11 +563,25 @@ const Social = (() => {
       if (!popOpen || !globe) return;
       const dt = Math.min(64, now - (spinLast || now));
       spinLast = now;
-      if (!reduceMotion.matches && dragging === null) phi += 0.00017 * dt;
+      if (focusingSelf) {
+        const focusK = reduceMotion.matches ? 1 : 1 - Math.exp(-dt / 180);
+        phi += (focusPhi - phi) * focusK;
+        globeTheta += (focusTheta - globeTheta) * focusK;
+        if (
+          Math.abs(focusPhi - phi) < 0.001 &&
+          Math.abs(focusTheta - globeTheta) < 0.001
+        ) {
+          phi = focusPhi;
+          globeTheta = focusTheta;
+          focusingSelf = false;
+        }
+      } else if (!reduceMotion.matches && dragging === null) {
+        phi += 0.00017 * dt;
+      }
       // Damped approach: interruptible, carries a little momentum.
       const k = reduceMotion.matches ? 1 : 1 - Math.exp(-dt / 90);
       dragOffset += (dragTarget - dragOffset) * k;
-      globe.update({ phi: phi + dragOffset });
+      globe.update({ phi: phi + dragOffset, theta: globeTheta });
       updateChipVisibility();
       spinId = requestAnimationFrame(step);
     };
@@ -525,11 +608,27 @@ const Social = (() => {
       dragging = null;
       dragOffset = 0;
       dragTarget = 0;
+      focusingSelf = false;
     }, reduceMotion.matches ? 0 : 180);
   }
 
   if (btn && pop) {
-    btn.addEventListener('click', () => (popOpen ? closePop() : openPop()));
+    btn.addEventListener('click', () => {
+      if (!popOpen) requestPreciseLocation();
+      if (popOpen) closePop();
+      else openPop();
+    });
+    // Reuse an existing grant without showing a prompt during page load.
+    if (navigator.permissions?.query) {
+      navigator.permissions
+        .query({ name: 'geolocation' })
+        .then(({ state }) => {
+          if (state === 'granted') requestPreciseLocation();
+        })
+        .catch(() => {
+          /* Permissions API support is optional; the click path still works. */
+        });
+    }
     document.addEventListener('pointerdown', (e) => {
       if (popOpen && !pop.contains(e.target) && !btn.contains(e.target)) closePop();
     });
@@ -538,7 +637,7 @@ const Social = (() => {
     });
   }
 
-  // --- bullet chat (press / to talk) ---------------------------------------
+  // --- bullet screen (press / to talk) -------------------------------------
   //
   // Sent text crosses the screen left-to-right at constant speed (linear —
   // the one easing that's correct for steady motion). Hovering a bullet
@@ -554,11 +653,11 @@ const Social = (() => {
   bulletLayer.className = 'bullet-layer';
   document.body.appendChild(bulletLayer);
 
-  let bulletsOn = true;
+  let bulletsOn = false;
   try {
-    bulletsOn = localStorage.getItem('zw-bullets') !== '0';
+    bulletsOn = localStorage.getItem('zw-bullets') === '1';
   } catch {
-    /* private mode: default on */
+    /* private mode: default off */
   }
 
   const CLOSE_SVG = `<svg width="10" height="10" viewBox="0 0 24 24" aria-hidden="true">
@@ -674,14 +773,22 @@ const Social = (() => {
   let barInput = null;
   let barSend = null;
   let barOpen = false;
+  const chatHint = document.getElementById('chat-hint');
+
+  function syncBarTrigger() {
+    if (!chatHint) return;
+    chatHint.setAttribute('aria-expanded', String(barOpen));
+    chatHint.title = barOpen ? 'Close Bullet screen' : 'Open Bullet screen';
+  }
 
   function ensureBar() {
     if (barEl) return;
     barEl = document.createElement('div');
+    barEl.id = 'chat-dock';
     barEl.className = 'chat-dock';
     barEl.innerHTML =
       `<div class="chat-bar">
-        <input type="text" maxlength="120" placeholder="Say something" aria-label="Bullet chat message" />
+        <input type="text" maxlength="120" placeholder="Say something" aria-label="Bullet screen message" />
         <button class="chat-send" aria-label="Send" disabled>
           <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 19V6M6 12l6-6 6 6" stroke="currentColor" stroke-width="2.2" fill="none"
@@ -689,10 +796,12 @@ const Social = (() => {
           </svg>
         </button>
       </div>
-      <button class="bullet-mode" id="bullet-toggle" type="button" aria-label="Bullet chat"
-        aria-pressed="true" title="Hide bullet chat">
-        <span class="bullet-mode-label">Bullet chat</span>
+      <button class="bullet-mode" id="bullet-toggle" type="button" aria-label="Bullet screen"
+        aria-pressed="false" title="Show Bullet screen">
+        <span class="bullet-mode-label">Bullet screen</span>
         <span class="bullet-flow" aria-hidden="true">
+          <span class="bullet-flow-path" data-bullet-path></span>
+          <span class="bullet-flow-path" data-bullet-path></span>
           <span class="bullet-flow-path" data-bullet-path></span>
           <span class="bullet-flow-path" data-bullet-path></span>
           <span class="bullet-flow-path" data-bullet-path></span>
@@ -708,7 +817,7 @@ const Social = (() => {
       if (!text) return;
       presence?.say(text);
       spawnBullet(text, true);
-      if (!bulletsOn) showToast('Message sent — turn on Bullet chat to see it here');
+      if (!bulletsOn) showToast('Message sent — turn on Bullet screen to see it here');
       barInput.value = '';
       barSend.disabled = true;
       barInput.focus({ preventScroll: true });
@@ -730,7 +839,13 @@ const Social = (() => {
       if (!barOpen) return;
       // Dismissing a bullet is part of the chat surface — only a click on the
       // page itself closes the composer.
-      if (barEl.contains(e.target) || e.target.closest('.bullet')) return;
+      if (
+        barEl.contains(e.target) ||
+        chatHint?.contains(e.target) ||
+        e.target.closest('.bullet')
+      ) {
+        return;
+      }
       closeBar();
     });
   }
@@ -747,6 +862,7 @@ const Social = (() => {
       barEl.classList.remove('is-instant');
     }
     barInput.focus({ preventScroll: true });
+    syncBarTrigger();
   }
 
   function closeBar(instant = false) {
@@ -759,19 +875,26 @@ const Social = (() => {
     if (instant) {
       barEl.hidden = true;
       barEl.classList.remove('is-instant');
+      syncBarTrigger();
       return;
     }
+    syncBarTrigger();
     setTimeout(() => {
       if (!barOpen) barEl.hidden = true;
     }, 200);
   }
 
+  function toggleBar(instant = false) {
+    if (barOpen) closeBar(instant);
+    else openBar(instant);
+  }
+
   addEventListener('keydown', (e) => {
-    if (e.key !== '/' || barOpen) return;
+    if (e.key !== '/') return;
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
     e.preventDefault();
-    openBar(true);
+    toggleBar(true);
   });
 
   function clearBulletDisplay() {
@@ -790,7 +913,7 @@ const Social = (() => {
     if (!button) return;
     const render = () => {
       button.setAttribute('aria-pressed', String(bulletsOn));
-      button.title = bulletsOn ? 'Hide bullet chat' : 'Show bullet chat';
+      button.title = bulletsOn ? 'Hide Bullet screen' : 'Show Bullet screen';
     };
     button.addEventListener('click', () => {
       bulletsOn = !bulletsOn;
@@ -806,12 +929,13 @@ const Social = (() => {
   }
 
   // Topbar hint chip: another way in, for people who never guess "/".
-  document.getElementById('chat-hint')?.addEventListener('click', () => openBar());
+  chatHint?.addEventListener('click', () => toggleBar());
+  syncBarTrigger();
 
   // --- wiring ---------------------------------------------------------------
 
   return {
-    location,
+    location: sharedLocation,
     bind(p) {
       presence = p;
     },

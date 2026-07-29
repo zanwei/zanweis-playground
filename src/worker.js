@@ -35,18 +35,50 @@ const BULLET_BURST = 3;
 const BULLET_REFILL_MS = 2500;
 const BULLET_GLOBAL_PER_SEC = 25;
 const ROSTER_CAP = 200;
+const LIKE_MIN_MS = 120;
+const LIKE_COUNTS_KEY = 'like-counts:v1';
+const LIKE_MEMBERSHIP_PREFIX = 'like:v1:';
+const LIKE_CARDS = new Set([
+  'status-indicator',
+  'ball-model-picker',
+  'dialog',
+  'claude-model-selector',
+  'liquid-connector',
+  'model-picker',
+  'table-of-content',
+  'chatgpt-model-selector',
+  'dia-logo',
+  'linear-logo',
+  'fontdetector-logo',
+  'clear-logo',
+  'macintosh-logo',
+  'affine-logo',
+  'affine-hero',
+  'bridge',
+]);
+const CLIENT_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
 export class PresenceRoom {
   constructor(state) {
     this.state = state;
     this.peers = new Map(); // ws -> peer record
     this.pendingCursors = new Map(); // id -> { a, fx, fy }
+    this.pendingLikeCounts = new Map(); // card -> latest authoritative count
     this.colorCursor = 0;
     this.nextId = 1;
     this.countDirty = false;
     this.tickTimer = null;
     this.bulletWindowStart = 0;
     this.bulletWindowCount = 0;
+    this.likeCounts = Object.fromEntries([...LIKE_CARDS].map((card) => [card, 0]));
+    this.likesReady = this.state.blockConcurrencyWhile(async () => {
+      const stored = await this.state.storage.get(LIKE_COUNTS_KEY);
+      if (!stored || typeof stored !== 'object') return;
+      for (const card of LIKE_CARDS) {
+        const count = stored[card];
+        if (Number.isSafeInteger(count) && count >= 0) this.likeCounts[card] = count;
+      }
+    });
   }
 
   send(ws, payload) {
@@ -69,6 +101,62 @@ export class PresenceRoom {
     }
   }
 
+  publishLike(card, count, clientId, on, changed) {
+    if (changed) this.pendingLikeCounts.set(card, count);
+    for (const [ws, peer] of this.peers) {
+      if (peer.clientId !== clientId) continue;
+      this.send(ws, { t: 'like', card, count, on });
+    }
+  }
+
+  clientIdFor(request) {
+    let candidate = '';
+    try {
+      candidate = new URL(request.url).searchParams.get('client') || '';
+    } catch {
+      /* a malformed URL receives a fresh anonymous identity */
+    }
+    return CLIENT_ID_RE.test(candidate) ? candidate : crypto.randomUUID();
+  }
+
+  membershipKey(clientId, card) {
+    return `${LIKE_MEMBERSHIP_PREFIX}${clientId}:${card}`;
+  }
+
+  async likesSnapshot(clientId) {
+    await this.likesReady;
+    const prefix = `${LIKE_MEMBERSHIP_PREFIX}${clientId}:`;
+    const memberships = await this.state.storage.list({ prefix });
+    const mine = [];
+    for (const key of memberships.keys()) {
+      const card = key.slice(prefix.length);
+      if (LIKE_CARDS.has(card)) mine.push(card);
+    }
+    return { counts: { ...this.likeCounts }, mine };
+  }
+
+  async setLike(peer, card, on) {
+    const membershipKey = this.membershipKey(peer.clientId, card);
+    const result = await this.state.storage.transaction(async (txn) => {
+      const had = (await txn.get(membershipKey)) === true;
+      const stored = (await txn.get(LIKE_COUNTS_KEY)) || {};
+      let count =
+        Number.isSafeInteger(stored[card]) && stored[card] >= 0
+          ? stored[card]
+          : this.likeCounts[card] || 0;
+      if (had === on) return { changed: false, count };
+
+      count = Math.max(0, count + (on ? 1 : -1));
+      if (on) await txn.put(membershipKey, true);
+      else await txn.delete(membershipKey);
+      await txn.put(LIKE_COUNTS_KEY, { ...stored, [card]: count });
+      return { changed: true, count };
+    });
+
+    this.likeCounts[card] = result.count;
+    this.publishLike(card, result.count, peer.clientId, on, result.changed);
+  }
+
   drop(ws) {
     const peer = this.peers.get(ws);
     if (!peer) return;
@@ -88,11 +176,17 @@ export class PresenceRoom {
       clearInterval(this.tickTimer);
       this.tickTimer = null;
       this.pendingCursors.clear();
+      this.pendingLikeCounts.clear();
       return;
     }
     if (this.countDirty) {
       this.countDirty = false;
       this.broadcast({ t: 'count', n: this.peers.size });
+    }
+    if (this.pendingLikeCounts.size) {
+      const counts = Object.fromEntries(this.pendingLikeCounts);
+      this.pendingLikeCounts.clear();
+      this.broadcast({ t: 'likes', counts });
     }
     if (this.pendingCursors.size === 0) return;
     const list = [];
@@ -116,7 +210,7 @@ export class PresenceRoom {
     return ++this.bulletWindowCount <= BULLET_GLOBAL_PER_SEC;
   }
 
-  fetch(request) {
+  async fetch(request) {
     if (request.headers.get('Upgrade') !== 'websocket') {
       return new Response('expected websocket', { status: 426 });
     }
@@ -130,6 +224,8 @@ export class PresenceRoom {
 
     const id = String(this.nextId++);
     const color = CURSOR_COLORS[this.colorCursor++ % CURSOR_COLORS.length];
+    const clientId = this.clientIdFor(request);
+    const likes = await this.likesSnapshot(clientId);
 
     const roster = [];
     for (const p of this.peers.values()) {
@@ -141,17 +237,19 @@ export class PresenceRoom {
     this.peers.set(server, {
       id,
       color,
+      clientId,
       lastEvent: null,
       loc: null,
       cursorAt: 0,
       metaAt: 0,
+      likeAt: 0,
       sprayAt: 0,
       bTokens: BULLET_BURST,
       bAt: now,
     });
     this.ensureTick();
 
-    this.send(server, { t: 'hello', id, color, peers: roster });
+    this.send(server, { t: 'hello', id, color, clientId, peers: roster, likes });
     this.broadcast({ t: 'join', id, color }, server);
     this.countDirty = true;
     this.send(server, { t: 'count', n: this.peers.size });
@@ -159,7 +257,7 @@ export class PresenceRoom {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  webSocketMessage(ws, raw) {
+  async webSocketMessage(ws, raw) {
     const peer = this.peers.get(ws);
     if (!peer || typeof raw !== 'string' || raw.length > 4096) return;
     let msg;
@@ -221,6 +319,13 @@ export class PresenceRoom {
       case 'idle': {
         this.pendingCursors.delete(id);
         this.broadcast({ t: 'idle', id }, ws);
+        break;
+      }
+      case 'like': {
+        if (!LIKE_CARDS.has(msg.card) || typeof msg.on !== 'boolean') break;
+        if (now - peer.likeAt < LIKE_MIN_MS) break;
+        peer.likeAt = now;
+        await this.setLike(peer, msg.card, msg.on);
         break;
       }
     }
