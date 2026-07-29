@@ -11,3 +11,5 @@ README.md
 components/*/.git
 components/*/tests
 components/*/node_modules
+tests
+.playwright-cli

@@ -347,7 +347,11 @@ function durableState(sockets) {
 
 test('Durable Object restores unique users and a late close cannot delete a new generation', async () => {
   const source = await readFile(new URL('../src/worker.js', import.meta.url), 'utf8');
-  const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
+  const testableSource = source.replace(
+    "import { WorkerEntrypoint } from 'cloudflare:workers';",
+    'class WorkerEntrypoint {}'
+  );
+  const moduleUrl = `data:text/javascript;base64,${Buffer.from(testableSource).toString('base64')}`;
   const { PresenceRoom } = await import(moduleUrl);
 
   const clientId = 'stable_private_user_0001';

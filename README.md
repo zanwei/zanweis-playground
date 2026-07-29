@@ -15,6 +15,9 @@ node server.js          # local, zero dependencies → http://localhost:4321
 npx wrangler dev        # Cloudflare Worker simulator (WebSocket presence)
 ```
 
+Video range delivery uses per-entrypoint Workers Cache and requires Wrangler
+4.107.0 or newer.
+
 ## Deploy (Cloudflare)
 
 ```bash

@@ -538,6 +538,34 @@ function presenceEvent(req, res) {
 // Static files
 // ---------------------------------------------------------------------------
 
+function parseSingleByteRange(header, size) {
+  if (typeof header !== 'string' || size === 0) return null;
+
+  // Deliberately reject multipart ranges. The local server only needs the
+  // single-range behavior used by media elements, and treating unsupported
+  // range syntax as unsatisfiable keeps responses deterministic.
+  const match = /^bytes\s*=\s*(\d*)\s*-\s*(\d*)$/i.exec(header.trim());
+  if (!match || (!match[1] && !match[2])) return null;
+
+  if (!match[1]) {
+    const suffixLength = Number(match[2]);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) return null;
+    return {
+      start: Math.max(0, size - suffixLength),
+      end: size - 1,
+    };
+  }
+
+  const start = Number(match[1]);
+  if (!Number.isSafeInteger(start) || start >= size) return null;
+
+  if (!match[2]) return { start, end: size - 1 };
+
+  const requestedEnd = Number(match[2]);
+  if (!Number.isSafeInteger(requestedEnd) || requestedEnd < start) return null;
+  return { start, end: Math.min(requestedEnd, size - 1) };
+}
+
 function serveStatic(req, res) {
   // Decode defensively: malformed escapes (/%zz) must 400, not throw, and a
   // NUL byte would make fs.stat throw synchronously.
@@ -578,10 +606,48 @@ function serveStatic(req, res) {
       return;
     }
     const ext = path.extname(filePath).toLowerCase();
-    res.writeHead(200, {
+    const headers = {
       'Content-Type': MIME[ext] || 'application/octet-stream',
       'Cache-Control': 'no-cache',
+      'Accept-Ranges': 'bytes',
+    };
+    const isHead = req.method === 'HEAD';
+    const rangeHeader =
+      (req.method === 'GET' || isHead) ? req.headers.range : undefined;
+
+    if (rangeHeader !== undefined) {
+      const range = parseSingleByteRange(rangeHeader, stat.size);
+      if (!range) {
+        res.writeHead(416, {
+          ...headers,
+          'Content-Range': `bytes */${stat.size}`,
+          'Content-Length': 0,
+        }).end();
+        return;
+      }
+
+      const contentLength = range.end - range.start + 1;
+      res.writeHead(206, {
+        ...headers,
+        'Content-Range': `bytes ${range.start}-${range.end}/${stat.size}`,
+        'Content-Length': contentLength,
+      });
+      if (isHead) {
+        res.end();
+        return;
+      }
+      fs.createReadStream(filePath, range).pipe(res);
+      return;
+    }
+
+    res.writeHead(200, {
+      ...headers,
+      'Content-Length': stat.size,
     });
+    if (isHead) {
+      res.end();
+      return;
+    }
     fs.createReadStream(filePath).pipe(res);
   });
 }

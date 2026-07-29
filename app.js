@@ -33,6 +33,15 @@
   const fastMs = () => tokenMs('--duration-fast', 250);
   const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
   const hoverPlayback = matchMedia('(hover: hover) and (pointer: fine)');
+  const connection = navigator.connection;
+  const touchDevice = navigator.maxTouchPoints > 0;
+  const prefersDataSaving = () => Boolean(connection?.saveData);
+  const canPlayVideo = () =>
+    !touchDevice &&
+    hoverPlayback.matches &&
+    !reduceMotion.matches &&
+    !prefersDataSaving();
+  const VIDEO_HOVER_INTENT_MS = 150;
 
   const ARROW_SVG = `<svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true">
     <path d="M7 17 17 7M9 7h8v8" stroke="currentColor" stroke-width="2.2" fill="none"
@@ -308,6 +317,7 @@
 
   function buildCard(item, index) {
     const card = document.createElement('article');
+    let releaseCardVideo = null;
     card.className = 'card enter';
     card.dataset.slug = item.slug;
     card.dataset.category = item.category;
@@ -332,8 +342,8 @@
       card.innerHTML = `
         <div class="card-media card-media-video"
           style="aspect-ratio: ${item.aspect}; background: ${item.bg}">
-          <video class="video-thumb" src="${item.video}" poster="${item.poster}"
-            preload="metadata" muted loop playsinline aria-hidden="true"></video>
+          <video class="video-thumb" poster="${item.poster}"
+            preload="none" muted playsinline aria-hidden="true"></video>
           <button class="card-hit" aria-label="Open ${item.title} playground"></button>
           <div class="card-visitors"></div>
           <span class="card-label">${item.title}</span>
@@ -342,23 +352,50 @@
 
       const media = card.querySelector('.card-media');
       const video = card.querySelector('.video-thumb');
-      const stopVideo = () => {
+      let hoverIntentTimer = null;
+
+      const releaseVideo = () => {
+        clearTimeout(hoverIntentTimer);
+        hoverIntentTimer = null;
         video.pause();
-        if (video.readyState >= HTMLMediaElement.HAVE_METADATA) video.currentTime = 0;
+        if (video.hasAttribute('src')) {
+          video.removeAttribute('src');
+          video.load();
+        }
       };
-      media.addEventListener('mouseenter', () => {
-        if (!hoverPlayback.matches || reduceMotion.matches) return;
+      const playPreview = () => {
+        hoverIntentTimer = null;
+        if (!canPlayVideo() || !media.matches(':hover')) return;
+        if (!video.hasAttribute('src')) {
+          video.src = item.previewVideo;
+          video.load();
+        }
+        if (video.ended) video.currentTime = 0;
         video.play().catch(() => {
           /* a browser may still decline playback; the poster remains visible */
         });
+      };
+
+      media.addEventListener('mouseenter', () => {
+        if (!canPlayVideo()) return;
+        clearTimeout(hoverIntentTimer);
+        hoverIntentTimer = setTimeout(playPreview, VIDEO_HOVER_INTENT_MS);
       });
-      media.addEventListener('mouseleave', stopVideo);
+      media.addEventListener('mouseleave', releaseVideo);
+      video.addEventListener('error', releaseVideo);
       document.addEventListener('visibilitychange', () => {
-        if (document.hidden) stopVideo();
+        if (document.hidden) releaseVideo();
       });
       reduceMotion.addEventListener('change', (event) => {
-        if (event.matches) stopVideo();
+        if (event.matches) releaseVideo();
       });
+      hoverPlayback.addEventListener('change', (event) => {
+        if (!event.matches) releaseVideo();
+      });
+      connection?.addEventListener?.('change', () => {
+        if (prefersDataSaving()) releaseVideo();
+      });
+      releaseCardVideo = releaseVideo;
     } else {
       const [vw, vh] = item.viewport;
       card.innerHTML = `
@@ -391,11 +428,7 @@
 
     card.querySelector('.card-media').appendChild(createLikeButton(item));
     card.querySelector('.card-hit').addEventListener('click', () => {
-      const video = card.querySelector('.video-thumb');
-      if (video) {
-        video.pause();
-        if (video.readyState >= HTMLMediaElement.HAVE_METADATA) video.currentTime = 0;
-      }
+      releaseCardVideo?.();
       playClick();
       openPlayground(item);
     });
@@ -567,9 +600,15 @@
     byModal.body.classList.remove('is-video', 'is-live');
   }
 
+  function fallbackPlaygroundVideo() {
+    if (!byModal.video.hasAttribute('src')) return;
+    byModal.body.classList.remove('is-live');
+    resetPlaygroundVideo();
+  }
+
   function preparePlaygroundVideo(item) {
     resetPlaygroundVideo();
-    if (item.type !== 'video' || !item.video) return;
+    if (item.type !== 'video' || !item.video || !canPlayVideo()) return;
     byModal.video.src = item.video;
     if (item.poster) byModal.video.poster = item.poster;
     byModal.video.hidden = false;
@@ -580,7 +619,7 @@
     if (
       item.type !== 'video' ||
       !item.video ||
-      reduceMotion.matches ||
+      !canPlayVideo() ||
       epoch !== playgroundEpoch ||
       openItem !== item
     ) {
@@ -596,7 +635,7 @@
         byModal.body.classList.add('is-live');
       })
       .catch(() => {
-        /* muted autoplay can still be declined; keep the poster visible */
+        if (epoch === playgroundEpoch && openItem === item) fallbackPlaygroundVideo();
       });
   }
 
@@ -604,6 +643,14 @@
     byModal.video.pause();
     if (showPoster) byModal.body.classList.remove('is-live');
   }
+
+  byModal.video.addEventListener('error', fallbackPlaygroundVideo);
+  const enforceVideoPreferences = () => {
+    if (!canPlayVideo()) fallbackPlaygroundVideo();
+  };
+  reduceMotion.addEventListener('change', enforceVideoPreferences);
+  hoverPlayback.addEventListener('change', enforceVideoPreferences);
+  connection?.addEventListener?.('change', enforceVideoPreferences);
 
   function finishPlaygroundOpen(item, epoch) {
     morphTimer = null;
@@ -744,7 +791,7 @@
     playgroundEpoch += 1;
     const source = !reduceMotion.matches && cardMediaFor(item.slug);
     openItem = null;
-    pausePlaygroundVideo(true);
+    resetPlaygroundVideo();
     clearTimeout(morphTimer);
     morphTimer = null;
 
@@ -813,8 +860,10 @@
   });
   reduceMotion.addEventListener('change', (event) => {
     if (openItem?.type !== 'video') return;
-    if (event.matches) pausePlaygroundVideo(true);
-    else playPlaygroundVideo(openItem);
+    if (!event.matches && canPlayVideo()) {
+      preparePlaygroundVideo(openItem);
+      playPlaygroundVideo(openItem);
+    }
   });
 
   function syncToHash() {
