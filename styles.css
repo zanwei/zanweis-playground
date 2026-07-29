@@ -52,12 +52,31 @@
   box-sizing: border-box;
 }
 
+html,
+body {
+  max-width: 100%;
+  overflow-x: clip;
+}
+
+@supports not (overflow: clip) {
+  html,
+  body {
+    overflow-x: hidden;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  html,
+  body {
+    /* Stop mobile rubber-band panning without disabling desktop trackpad
+       back/forward navigation. */
+    overscroll-behavior-x: none;
+  }
+}
+
 html {
   height: 100%;
   scrollbar-gutter: stable;
-  /* The page never scrolls sideways by design; clip stray overflow so a
-     horizontal scrollbar track can't appear as a gray band. */
-  overflow-x: clip;
   /* Paint the canvas itself: overscroll and pinch-zoom show page white,
      never the browser's default gray. */
   background: var(--bg);
@@ -155,6 +174,9 @@ html.boot-skip .boot {
   background: var(--bg);
   min-height: 100vh;
   min-height: 100dvh;
+  /* The gallery has no horizontal gesture. Keep vertical scrolling and
+     pinch-zoom while preventing WebKit's sideways rubber-band pan. */
+  touch-action: pan-y pinch-zoom;
 }
 
 /* The translated sheet stays IN FLOW, so during the intro the document would
@@ -556,6 +578,9 @@ html.revealing .sheet {
   border-radius: var(--radius);
   border: 1px solid var(--border);
   overflow: hidden;
+  /* Safari can otherwise composite a scaled iframe above overflow's rounded
+     clip, leaving square corners on dark previews such as Ball Model Picker. */
+  clip-path: inset(0 round var(--radius));
   /* per-card background set inline to match the demo page */
   contain: layout paint; /* a repainting demo never invalidates neighbors */
   transition: transform var(--duration-quick) var(--ease-out);
@@ -1743,9 +1768,7 @@ html.revealing .sheet {
   .chat-dock {
     left: 32px;
     right: 32px;
-    bottom: calc(
-      28px + env(safe-area-inset-bottom) + var(--composer-keyboard-offset, 0px)
-    );
+    bottom: calc(28px + env(safe-area-inset-bottom));
     width: auto;
     translate: 0 0;
     flex-direction: column;
@@ -1758,8 +1781,17 @@ html.revealing .sheet {
     align-self: center;
   }
 
+  .chat-dock.is-visual-viewport {
+    top: var(--composer-viewport-bottom);
+    bottom: auto;
+    translate: 0 calc(-100% - 28px - env(safe-area-inset-bottom));
+  }
+
   .chat-bar input {
     width: 100%;
+    /* iOS zooms focused form fields below 16px, which can move this fixed
+       composer outside the visual viewport while the keyboard animates. */
+    font-size: 16px;
   }
 }
 

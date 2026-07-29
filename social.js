@@ -728,7 +728,7 @@ const Social = (() => {
         e.stopPropagation();
         clearTimeout(idle);
         remove();
-        if (barOpen) barInput?.focus({ preventScroll: true });
+        if (barOpen) focusComposerInput();
       });
       return;
     }
@@ -743,7 +743,7 @@ const Social = (() => {
       e.stopPropagation();
       b.classList.add('is-out'); // freeze via paused animation + pop out
       setTimeout(remove, 180);
-      if (barOpen) barInput?.focus({ preventScroll: true });
+      if (barOpen) focusComposerInput();
     });
   }
 
@@ -759,6 +759,8 @@ const Social = (() => {
   let composerLayout = null;
   const composerAnimations = new WeakMap();
   const composerFallbackTimers = new WeakMap();
+  let composerViewportFrame = 0;
+  let composerViewportTimers = [];
   const chatHint = document.getElementById('chat-hint');
 
   function measureComposerLayout() {
@@ -822,19 +824,59 @@ const Social = (() => {
     }
   }
 
-  function syncComposerKeyboardOffset() {
+  function resetComposerViewportPosition() {
+    if (!barEl) return;
+    barEl.classList.remove('is-visual-viewport');
+    barEl.style.removeProperty('--composer-viewport-bottom');
+  }
+
+  function applyComposerViewportPosition() {
+    composerViewportFrame = 0;
     if (!barEl) return;
     const viewport = window.visualViewport;
     if (!compactComposer.matches || !viewport) {
-      barEl.style.removeProperty('--composer-keyboard-offset');
+      resetComposerViewportPosition();
       return;
     }
-    // On iOS, fixed elements can remain attached to the layout viewport while
-    // the visual viewport shrinks behind the software keyboard. Lift the
-    // whole composer by that covered area; browsers that already resize the
-    // layout viewport naturally resolve this to zero.
-    const covered = Math.max(0, innerHeight - viewport.height - viewport.offsetTop);
-    barEl.style.setProperty('--composer-keyboard-offset', `${Math.round(covered)}px`);
+
+    // Anchor to the visual viewport's bottom edge instead of compensating a
+    // layout-viewport `bottom`. pageTop is a useful fallback while WebKit is
+    // briefly reporting a stale offsetTop during keyboard animation.
+    const pageOffsetTop = Number.isFinite(viewport.pageTop)
+      ? viewport.pageTop - window.scrollY
+      : 0;
+    const visualTop = Math.max(0, viewport.offsetTop, pageOffsetTop);
+    const visualBottom = visualTop + viewport.height;
+    barEl.style.setProperty('--composer-viewport-bottom', `${Math.round(visualBottom)}px`);
+    barEl.classList.add('is-visual-viewport');
+  }
+
+  function clearComposerViewportTimers() {
+    cancelAnimationFrame(composerViewportFrame);
+    composerViewportFrame = 0;
+    for (const timer of composerViewportTimers) clearTimeout(timer);
+    composerViewportTimers = [];
+  }
+
+  function scheduleComposerViewportSync(settle = false) {
+    if (!barEl || barEl.hidden) return;
+    if (settle) clearComposerViewportTimers();
+    else cancelAnimationFrame(composerViewportFrame);
+    composerViewportFrame = requestAnimationFrame(applyComposerViewportPosition);
+    if (!settle) return;
+
+    // WebKit may publish its final offset after the last viewport event.
+    // Re-read across the keyboard animation instead of trusting one frame.
+    composerViewportTimers = [50, 150, 300].map((delay) =>
+      setTimeout(() => scheduleComposerViewportSync(), delay)
+    );
+  }
+
+  function focusComposerInput() {
+    if (!barInput) return;
+    if (compactComposer.matches) barInput.focus();
+    else barInput.focus({ preventScroll: true });
+    scheduleComposerViewportSync(true);
   }
 
   addEventListener(
@@ -842,7 +884,7 @@ const Social = (() => {
     () => {
       const nextCompact = compactComposer.matches;
       const previous = composerLayout;
-      syncComposerKeyboardOffset();
+      scheduleComposerViewportSync(true);
       if (nextCompact === composerIsCompact || !barOpen) {
         composerIsCompact = nextCompact;
         composerLayout = measureComposerLayout();
@@ -894,10 +936,13 @@ const Social = (() => {
     barSend = barEl.querySelector('.chat-send');
     document.body.appendChild(barEl);
     wireBulletButton(barEl.querySelector('#bullet-toggle'));
-    window.visualViewport?.addEventListener('resize', syncComposerKeyboardOffset, {
+    window.visualViewport?.addEventListener('resize', () => scheduleComposerViewportSync(true), {
       passive: true,
     });
-    window.visualViewport?.addEventListener('scroll', syncComposerKeyboardOffset, {
+    window.visualViewport?.addEventListener('scroll', () => scheduleComposerViewportSync(true), {
+      passive: true,
+    });
+    window.visualViewport?.addEventListener('scrollend', () => scheduleComposerViewportSync(), {
       passive: true,
     });
 
@@ -920,7 +965,7 @@ const Social = (() => {
       spawnBullet(text, true);
       barInput.value = '';
       syncSendState();
-      barInput.focus({ preventScroll: true });
+      focusComposerInput();
     };
 
     barInput.addEventListener('compositionstart', () => {
@@ -932,6 +977,8 @@ const Social = (() => {
       syncSendState();
     });
     barInput.addEventListener('input', syncSendState);
+    barInput.addEventListener('focus', () => scheduleComposerViewportSync(true));
+    barInput.addEventListener('blur', () => scheduleComposerViewportSync(true));
     barInput.addEventListener('keydown', (e) => {
       // Enter confirms a Chinese/Japanese/Korean IME candidate. Chromium and
       // Firefox expose isComposing; keyCode 229 covers Safari's event-ordering
@@ -974,8 +1021,8 @@ const Social = (() => {
     }
     // The default-open composer should be visible without summoning a mobile
     // keyboard or stealing focus. Explicit user opens still focus the field.
-    if (focus) barInput.focus({ preventScroll: true });
-    syncComposerKeyboardOffset();
+    if (focus) focusComposerInput();
+    else scheduleComposerViewportSync(true);
     composerLayout = measureComposerLayout();
     syncBarTrigger();
   }
@@ -985,17 +1032,24 @@ const Social = (() => {
     barOpen = false;
     barInput.value = '';
     barSend.disabled = true;
+    if (document.activeElement === barInput) barInput.blur();
     if (instant) barEl.classList.add('is-instant');
     barEl.classList.remove('is-on');
     if (instant) {
       barEl.hidden = true;
       barEl.classList.remove('is-instant');
+      clearComposerViewportTimers();
+      resetComposerViewportPosition();
       syncBarTrigger();
       return;
     }
     syncBarTrigger();
     setTimeout(() => {
-      if (!barOpen) barEl.hidden = true;
+      if (!barOpen) {
+        barEl.hidden = true;
+        clearComposerViewportTimers();
+        resetComposerViewportPosition();
+      }
     }, 200);
   }
 
