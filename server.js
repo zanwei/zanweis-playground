@@ -7,6 +7,7 @@
  *   GET  /presence/stream        SSE. Server assigns {id, color}, then relays
  *                                join / cursor / focus / leave / count events.
  *   POST /presence/event         One JSON event from a client, relayed to others.
+ *   like {card, on}               Idempotent, process-persistent card reaction.
  */
 'use strict';
 
@@ -71,9 +72,51 @@ const BULLET_REFILL_MS = 2500; // …refilling one every 2.5s
 const BULLET_GLOBAL_PER_SEC = 25; // whole-site bullet budget
 const SLOW_LIMIT = 256 * 1024; // unread SSE backlog before eviction
 const ROSTER_CAP = 200; // hello snapshot detail cap
+const LIKE_MIN_MS = 120; // per-peer floor; a SET never needs pointer-rate traffic
+const LIKE_CARDS = new Set([
+  'status-indicator',
+  'ball-model-picker',
+  'dialog',
+  'claude-model-selector',
+  'liquid-connector',
+  'model-picker',
+  'table-of-content',
+  'chatgpt-model-selector',
+  'dia-logo',
+  'linear-logo',
+  'fontdetector-logo',
+  'clear-logo',
+  'macintosh-logo',
+  'affine-logo',
+  'affine-hero',
+  'bridge',
+]);
+const CLIENT_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
-/** id -> { res, color, token, lastEvent, loc, cursorAt, metaAt, bTokens, bAt } */
+/** id -> { res, color, token, clientId, lastEvent, loc, cursorAt, metaAt, likeAt, bTokens, bAt } */
 const peers = new Map();
+/** card slug -> stable anonymous client IDs that currently like it. */
+const likesByCard = new Map([...LIKE_CARDS].map((card) => [card, new Set()]));
+
+function clientIdFor(req) {
+  let candidate = '';
+  try {
+    candidate = new URL(req.url, 'http://localhost').searchParams.get('client') || '';
+  } catch {
+    /* a malformed URL receives a fresh anonymous identity */
+  }
+  return CLIENT_ID_RE.test(candidate) ? candidate : crypto.randomUUID();
+}
+
+function likesSnapshot(clientId) {
+  const counts = {};
+  const mine = [];
+  for (const [card, clients] of likesByCard) {
+    counts[card] = clients.size;
+    if (clients.has(clientId)) mine.push(card);
+  }
+  return { counts, mine };
+}
 
 function evict(id, peer) {
   peers.delete(id);
@@ -98,9 +141,25 @@ function broadcast(payload, exceptId) {
   }
 }
 
-// --- cursor tick: latest position per peer, flushed as one frame ----------
+// Like SETs are acknowledged immediately to every live tab sharing the
+// actor's stable client ID. Changed counts join the 50 ms tick below so a
+// burst costs one room-wide frame instead of one fanout per event.
+function publishLike(card, count, clientId, on, changed) {
+  if (changed) pendingLikeCounts.set(card, count);
+  for (const [id, peer] of peers) {
+    if (peer.clientId !== clientId) continue;
+    if (peer.res.writableLength > SLOW_LIMIT) {
+      evict(id, peer);
+      continue;
+    }
+    peer.res.write(`data: ${JSON.stringify({ t: 'like', card, count, on })}\n\n`);
+  }
+}
+
+// --- room tick: coalesced cursors and like counts, flushed as frames -------
 
 const pendingCursors = new Map(); // id -> { a, fx, fy }
+const pendingLikeCounts = new Map(); // card -> latest authoritative count
 let countDirty = false;
 let tickTimer = null;
 
@@ -109,11 +168,17 @@ function tick() {
     clearInterval(tickTimer);
     tickTimer = null;
     pendingCursors.clear();
+    pendingLikeCounts.clear();
     return;
   }
   if (countDirty) {
     countDirty = false;
     broadcast({ t: 'count', n: peers.size });
+  }
+  if (pendingLikeCounts.size) {
+    const counts = Object.fromEntries(pendingLikeCounts);
+    pendingLikeCounts.clear();
+    broadcast({ t: 'likes', counts });
   }
   if (pendingCursors.size === 0) return;
   const list = [];
@@ -153,6 +218,7 @@ function presenceStream(req, res) {
 
   const id = String(nextId++);
   const color = CURSOR_COLORS[colorCursor++ % CURSOR_COLORS.length];
+  const clientId = clientIdFor(req);
   // The POST channel proves identity with this token, so one visitor can't
   // puppeteer another's cursor by guessing their (sequential) id.
   const token = crypto.randomBytes(12).toString('hex');
@@ -171,17 +237,29 @@ function presenceStream(req, res) {
     if (roster.length >= ROSTER_CAP) break;
     roster.push({ id: pid, color: p.color, last: p.lastEvent || null, loc: p.loc || null });
   }
-  res.write(`data: ${JSON.stringify({ t: 'hello', id, color, token, peers: roster })}\n\n`);
+  res.write(
+    `data: ${JSON.stringify({
+      t: 'hello',
+      id,
+      color,
+      token,
+      clientId,
+      peers: roster,
+      likes: likesSnapshot(clientId),
+    })}\n\n`
+  );
 
   const now = Date.now();
   peers.set(id, {
     res,
     color,
     token,
+    clientId,
     lastEvent: null,
     loc: null,
     cursorAt: 0,
     metaAt: 0,
+    likeAt: 0,
     bTokens: BULLET_BURST,
     bAt: now,
   });
@@ -273,6 +351,20 @@ function presenceEvent(req, res) {
           if (now - (peer.sprayAt || 0) < 250) break;
           peer.sprayAt = now;
           broadcast({ t: 'spray', id, on: msg.on ? 1 : 0 }, id);
+          break;
+        }
+        case 'like': {
+          if (!LIKE_CARDS.has(msg.card) || typeof msg.on !== 'boolean') break;
+          if (now - peer.likeAt < LIKE_MIN_MS) break;
+          peer.likeAt = now;
+          const clients = likesByCard.get(msg.card);
+          const had = clients.has(peer.clientId);
+          const changed = had !== msg.on;
+          if (changed) {
+            if (msg.on) clients.add(peer.clientId);
+            else clients.delete(peer.clientId);
+          }
+          publishLike(msg.card, clients.size, peer.clientId, msg.on, changed);
           break;
         }
       }

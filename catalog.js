@@ -162,6 +162,18 @@ const FIGMA_FILES = [
     file: 'Clear-App-Logo--Community-',
     bg: 'linear-gradient(#191b2a 0 32.7%, #010202 67.3% 100%)',
   },
+  {
+    slug: 'macintosh-logo',
+    title: 'Macintosh Logo',
+    source: 'https://www.figma.com/community/file/1465519339897723342',
+    bg: '#f8f6ea',
+  },
+  {
+    slug: 'affine-logo',
+    title: 'AFFiNE Logo',
+    source: 'https://www.figma.com/community/file/1260248555835307433',
+    bg: '#0c1023',
+  },
 ];
 
 for (const f of FIGMA_FILES) {
@@ -172,8 +184,71 @@ for (const f of FIGMA_FILES) {
     type: 'figma',
     image,
     thumb: image,
-    github: `https://www.figma.com/design/${f.key}/${f.file}`,
+    github: f.source || `https://www.figma.com/design/${f.key}/${f.file}`,
     bg: f.bg,
     aspect: '4 / 3',
   });
 }
+
+// Motion studies use a poster at rest and a muted WebM while the card is
+// hovered. Source points to the product rather than a repository.
+const VIDEO_FILES = [
+  {
+    slug: 'affine-hero',
+    title: 'AFFiNE Hero',
+    source: 'https://affine.pro',
+    bg: '#ffffff',
+    aspect: '36 / 25',
+  },
+  {
+    slug: 'bridge',
+    title: 'Bridge',
+    source: 'https://bridge.surf',
+    bg: '#ffffff',
+    aspect: '960 / 541',
+  },
+];
+
+for (const item of VIDEO_FILES) {
+  const video = `assets/video/${item.slug}.webm`;
+  const poster = `assets/video/${item.slug}.webp`;
+  CATALOG.push({
+    slug: item.slug,
+    title: item.title,
+    type: 'video',
+    video,
+    poster,
+    image: poster,
+    thumb: poster,
+    github: item.source,
+    bg: item.bg,
+    aspect: item.aspect,
+  });
+}
+
+// One-off editorial shuffle. This order is intentionally fixed: reloading
+// the page must not make cards jump to different positions.
+const DISPLAY_ORDER = [
+  'fontdetector-logo',
+  'ball-model-picker',
+  'macintosh-logo',
+  'linear-logo',
+  'table-of-content',
+  'liquid-connector',
+  'affine-logo',
+  'chatgpt-model-selector',
+  'bridge',
+  'dialog',
+  'clear-logo',
+  'claude-model-selector',
+  'affine-hero',
+  'status-indicator',
+  'model-picker',
+  'dia-logo',
+];
+const DISPLAY_RANK = new Map(DISPLAY_ORDER.map((slug, index) => [slug, index]));
+CATALOG.sort(
+  (a, b) =>
+    (DISPLAY_RANK.get(a.slug) ?? Number.MAX_SAFE_INTEGER) -
+    (DISPLAY_RANK.get(b.slug) ?? Number.MAX_SAFE_INTEGER)
+);

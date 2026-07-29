@@ -2,7 +2,7 @@
 
 A live gallery of eight hand-built web components, laid out after
 [recent.design](https://recent.design): column masonry, a boot intro, and a
-multiplayer layer — shared cursors, bullet chat, an emoji fountain (hold L),
+multiplayer layer — shared cursors, Bullet screen, an emoji fountain (hold L),
 and a who's-here globe.
 
 ## Run
@@ -69,7 +69,7 @@ adapt their report rate to the room and cap what they render.
 - `src/worker.js` — Cloudflare Worker: Workers Assets + Durable Object room
 - `presence.js` — transport ladder, anchor math, remote cursor rendering
 - `app.js` — masonry, FLIP playground modal, count UI, presence wiring
-- `social.js` — globe popover, bullet chat, toasts
+- `social.js` — globe popover, Bullet screen, toasts
 - `fountain.js` — hold-L emoji fountain (pooled particles)
 - `boot.js` / `faces.js` — the shuffling-face intro and its pixel sprites
 - `styles.css` — layout and motion; tokens follow the transitions.dev scale

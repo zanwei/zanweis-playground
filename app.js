@@ -31,6 +31,7 @@
   const quickMs = () => tokenMs('--duration-quick', 150);
   const fastMs = () => tokenMs('--duration-fast', 250);
   const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+  const hoverPlayback = matchMedia('(hover: hover) and (pointer: fine)');
 
   const ARROW_SVG = `<svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true">
     <path d="M7 17 17 7M9 7h8v8" stroke="currentColor" stroke-width="2.2" fill="none"
@@ -42,6 +43,166 @@
   // documents never parse in the same frame), and are frozen once settled —
   // they are inert, so a live rAF loop in a preview is pure main-thread cost.
   const previewFrames = [];
+  let presence = null;
+
+  const LIKE_NUMBER_MS = 180;
+  const LIKE_BURST_MS = 500;
+  const likeNumberTimers = new WeakMap();
+  const likeBurstTimers = new WeakMap();
+
+  function likeCount(value, fallback = 0) {
+    const count = Number(value);
+    return Number.isFinite(count) && count >= 0 ? Math.floor(count) : fallback;
+  }
+
+  function likeNumber(value, state = '') {
+    const number = document.createElement('span');
+    number.className = `card-like-number${state ? ` ${state}` : ''}`;
+    number.textContent = String(value);
+    return number;
+  }
+
+  function updateLikeLabel(button, count, on) {
+    const title = button.dataset.likeTitle || 'card';
+    const noun = count === 1 ? 'like' : 'likes';
+    button.setAttribute('aria-pressed', String(on));
+    button.setAttribute('aria-label', `${on ? 'Unlike' : 'Like'} ${title}, ${count} ${noun}`);
+  }
+
+  function renderLikeButton(button, count, on, animate) {
+    if (!button) return;
+    const previous = likeCount(button.dataset.likeCount);
+    const next = likeCount(count, previous);
+    const pressed = typeof on === 'boolean' ? on : button.getAttribute('aria-pressed') === 'true';
+    const holder = button.querySelector('.card-like-count');
+
+    updateLikeLabel(button, next, pressed);
+    button.toggleAttribute('data-has-count', next > 0);
+    if (!holder) {
+      button.dataset.likeCount = String(next);
+      return;
+    }
+
+    if (!animate) {
+      clearTimeout(likeNumberTimers.get(button));
+      likeNumberTimers.delete(button);
+      holder.hidden = next === 0;
+      holder.replaceChildren(...(next > 0 ? [likeNumber(next)] : []));
+    } else if (next !== previous) {
+      clearTimeout(likeNumberTimers.get(button));
+      const leaving = previous > 0 ? likeNumber(previous) : null;
+      const entering = next > 0 ? likeNumber(next, 'is-entering') : null;
+      holder.hidden = false;
+      holder.replaceChildren(...[leaving, entering].filter(Boolean));
+      void holder.offsetWidth;
+      leaving?.classList.add('is-leaving');
+      entering?.classList.remove('is-entering');
+      const timer = setTimeout(() => {
+        if (button.dataset.likeCount !== String(next)) return;
+        holder.hidden = next === 0;
+        holder.replaceChildren(...(entering ? [entering] : []));
+        likeNumberTimers.delete(button);
+      }, LIKE_NUMBER_MS);
+      likeNumberTimers.set(button, timer);
+    }
+    button.dataset.likeCount = String(next);
+  }
+
+  function mineIncludes(mine, slug) {
+    if (Array.isArray(mine)) return mine.includes(slug);
+    if (mine instanceof Set) return mine.has(slug);
+    return Boolean(mine && typeof mine === 'object' && mine[slug]);
+  }
+
+  function snapshotCount(counts, slug) {
+    if (counts instanceof Map) return counts.get(slug);
+    if (counts && typeof counts === 'object') return counts[slug];
+    return 0;
+  }
+
+  function renderLikeSnapshot({ counts, mine } = {}) {
+    for (const card of masonry.querySelectorAll('.card[data-slug]')) {
+      const slug = card.dataset.slug;
+      renderLikeButton(
+        card.querySelector('.card-like'),
+        snapshotCount(counts, slug),
+        mineIncludes(mine, slug),
+        false
+      );
+    }
+  }
+
+  function renderLikeChange({ card, count, on } = {}) {
+    if (typeof card !== 'string' || !card) return;
+    const button = masonry.querySelector(
+      `.card[data-slug="${CSS.escape(card)}"] .card-like`
+    );
+    renderLikeButton(button, count, on, true);
+  }
+
+  function createLikeButton(item) {
+    const button = document.createElement('button');
+    button.className = 'card-like';
+    button.type = 'button';
+    button.dataset.likeTitle = item.title;
+    button.dataset.likeCount = '0';
+
+    const unlike = document.createElement('img');
+    unlike.className = 'card-like-icon card-like-icon-unliked';
+    unlike.src = 'assets/unlike.svg';
+    unlike.alt = '';
+    unlike.setAttribute('aria-hidden', 'true');
+    unlike.draggable = false;
+
+    const liked = document.createElement('img');
+    liked.className = 'card-like-icon card-like-icon-liked';
+    liked.src = 'assets/liked.svg';
+    liked.alt = '';
+    liked.setAttribute('aria-hidden', 'true');
+    liked.draggable = false;
+
+    const icons = document.createElement('span');
+    icons.className = 'card-like-icons';
+    icons.setAttribute('aria-hidden', 'true');
+    const burst = document.createElement('span');
+    burst.className = 'card-like-burst';
+    burst.append(
+      ...Array.from({ length: 9 }, () => {
+        const particle = document.createElement('span');
+        particle.className = 'card-like-particle';
+        return particle;
+      })
+    );
+    icons.append(burst, unlike, liked);
+
+    const count = document.createElement('span');
+    count.className = 'card-like-count';
+    count.setAttribute('aria-hidden', 'true');
+    count.hidden = true;
+    button.append(icons, count);
+    updateLikeLabel(button, 0, false);
+
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const nextOn = button.getAttribute('aria-pressed') !== 'true';
+      updateLikeLabel(button, likeCount(button.dataset.likeCount), nextOn);
+      if (nextOn && !reduceMotion.matches) {
+        clearTimeout(likeBurstTimers.get(icons));
+        icons.classList.remove('is-celebrating');
+        void icons.offsetWidth;
+        icons.classList.add('is-celebrating');
+        likeBurstTimers.set(
+          icons,
+          setTimeout(() => {
+            icons.classList.remove('is-celebrating');
+            likeBurstTimers.delete(icons);
+          }, LIKE_BURST_MS)
+        );
+      }
+      presence?.like(item.slug, nextOn);
+    });
+    return button;
+  }
 
   function hydratePreviews() {
     if (hydratePreviews.done) return;
@@ -100,6 +261,37 @@
           <span class="card-label">${item.title}</span>
           <span class="card-open">${ARROW_SVG}</span>
         </div>`;
+    } else if (item.type === 'video') {
+      card.innerHTML = `
+        <div class="card-media card-media-video"
+          style="aspect-ratio: ${item.aspect}; background: ${item.bg}">
+          <video class="video-thumb" src="${item.video}" poster="${item.poster}"
+            preload="metadata" muted loop playsinline aria-hidden="true"></video>
+          <button class="card-hit" aria-label="Open ${item.title} playground"></button>
+          <div class="card-visitors"></div>
+          <span class="card-label">${item.title}</span>
+          <span class="card-open">${ARROW_SVG}</span>
+        </div>`;
+
+      const media = card.querySelector('.card-media');
+      const video = card.querySelector('.video-thumb');
+      const stopVideo = () => {
+        video.pause();
+        if (video.readyState >= HTMLMediaElement.HAVE_METADATA) video.currentTime = 0;
+      };
+      media.addEventListener('mouseenter', () => {
+        if (!hoverPlayback.matches || reduceMotion.matches) return;
+        video.play().catch(() => {
+          /* a browser may still decline playback; the poster remains visible */
+        });
+      });
+      media.addEventListener('mouseleave', stopVideo);
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) stopVideo();
+      });
+      reduceMotion.addEventListener('change', (event) => {
+        if (event.matches) stopVideo();
+      });
     } else {
       const [vw, vh] = item.viewport;
       card.innerHTML = `
@@ -130,7 +322,13 @@
       }).observe(media);
     }
 
+    card.querySelector('.card-media').appendChild(createLikeButton(item));
     card.querySelector('.card-hit').addEventListener('click', () => {
+      const video = card.querySelector('.video-thumb');
+      if (video) {
+        video.pause();
+        if (video.readyState >= HTMLMediaElement.HAVE_METADATA) video.currentTime = 0;
+      }
       playClick();
       openPlayground(item);
     });
@@ -534,11 +732,13 @@
     onState: (on) => presence?.spray(on),
   });
 
-  const presence = Presence.start({
+  presence = Presence.start({
     loc: Social.location,
     onSelf: (self) => Social.onSelf(self),
     onLocations: (list) => Social.onLocations(list),
     onBullet: (b) => Social.onBullet(b),
+    onLikes: renderLikeSnapshot,
+    onLike: renderLikeChange,
     onSpray: ({ id, on }) => fountain.remoteSpray(id, on, () => presence.cursorPoint(id)),
     onCount(n) {
       setOnlineCount(n);

@@ -9,6 +9,7 @@
   --duration-fast: 250ms;
   --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1); /* strong ease-out for UI */
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
   --distance-base: 8px;
   --blur-small: 2px;
   --duration-very-slow: 500ms; /* emphasis moments */
@@ -361,23 +362,74 @@ html.revealing .sheet {
   touch-action: none; /* horizontal drags rotate the globe, never scroll */
 }
 
-/* One label only — a white tooltip over the viewer's marker. */
+/* Marker labels share one quiet tooltip treatment. Cobe owns the moving 1px
+   anchor; the chip only animates composited properties around that point. */
 .globe-chip {
   position: absolute;
   left: 0;
   top: 0;
-  transform: translate(-50%, calc(-100% - 10px));
+  visibility: hidden;
+  opacity: 0;
+  filter: blur(var(--blur-small));
+  transform: translate(-50%, calc(-100% - 8px)) translateY(2px) scale(0.97);
   padding: 5px 11px;
   border-radius: var(--radius-pill);
   background: var(--bg);
   color: var(--ink);
   font-size: 12px;
   font-weight: 500;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  pointer-events: none;
   box-shadow:
     0 0 0 1px rgba(17, 17, 20, 0.08),
     0 2px 6px rgba(17, 17, 20, 0.08),
     0 8px 20px rgba(17, 17, 20, 0.12);
+  transition:
+    opacity var(--duration-quick) var(--ease-smooth-out),
+    transform var(--duration-quick) var(--ease-smooth-out),
+    filter var(--duration-quick) var(--ease-smooth-out),
+    visibility 0s linear var(--duration-quick);
+}
+
+.globe-chip.is-visible {
+  visibility: visible;
+  opacity: 1;
+  filter: blur(0);
+  transform: translate(-50%, calc(-100% - 10px)) translateY(0) scale(1);
+  transition-delay: 0s;
+}
+
+.globe-chip.is-exiting {
+  visibility: visible;
+  opacity: 0;
+  filter: blur(var(--blur-small));
+  transform: translate(-50%, calc(-100% - 8px)) translateY(2px) scale(0.97);
+  transition-delay: 0s;
+}
+
+.globe-chip[data-placement='below'] {
+  transform: translate(-50%, 8px) translateY(-2px) scale(0.97);
+}
+
+.globe-chip[data-placement='below'].is-visible {
+  transform: translate(-50%, 10px) translateY(0) scale(1);
+}
+
+.globe-chip[data-placement='below'].is-exiting {
+  transform: translate(-50%, 8px) translateY(-2px) scale(0.97);
+}
+
+@starting-style {
+  .globe-chip.is-visible {
+    opacity: 0;
+    filter: blur(var(--blur-small));
+    transform: translate(-50%, calc(-100% - 8px)) translateY(2px) scale(0.97);
+  }
+
+  .globe-chip[data-placement='below'].is-visible {
+    transform: translate(-50%, 8px) translateY(-2px) scale(0.97);
+  }
 }
 
 .online-dot {
@@ -526,8 +578,9 @@ html.revealing .sheet {
   opacity: 1;
 }
 
-/* Figma cards: a plain thumbnail fills the media box. */
-.figma-thumb {
+/* Static artwork and motion posters fill their card surface. */
+.figma-thumb,
+.video-thumb {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -536,19 +589,24 @@ html.revealing .sheet {
   display: block;
 }
 
+.video-thumb {
+  pointer-events: none;
+}
+
 .card-hit {
   position: absolute;
   inset: 0;
+  z-index: 1;
   width: 100%;
   border-radius: inherit;
 }
-
 
 /* hover chrome: label chip + open arrow, opacity only */
 
 .card-label,
 .card-open {
   position: absolute;
+  z-index: 2;
   bottom: 10px;
   opacity: 0;
   transform: translateY(4px);
@@ -592,7 +650,6 @@ html.revealing .sheet {
   }
 }
 
-
 @media (hover: none) {
   .card-label,
   .card-open {
@@ -605,11 +662,266 @@ html.revealing .sheet {
 
 .card-visitors {
   position: absolute;
+  z-index: 2;
   top: 10px;
-  right: 10px;
+  left: 10px;
   display: flex;
   gap: 4px;
   pointer-events: none;
+}
+
+/* Shared likes sit above the full-card hit target. The icon stays tucked away
+   until the card is relevant, while a non-zero count remains visible so the
+   shared state is legible without requiring hover. */
+
+.card-like {
+  position: absolute;
+  z-index: 3;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 6px;
+  border: 1px solid rgba(17, 17, 20, 0.08);
+  border-radius: var(--radius-pill);
+  background: #fff;
+  box-shadow:
+    0 1px 2px rgba(17, 17, 20, 0.06),
+    0 6px 16px rgba(17, 17, 20, 0.09);
+  opacity: 0;
+  transform: translateY(-3px) scale(0.96);
+  pointer-events: none;
+  transition:
+    opacity 140ms var(--ease-out),
+    transform 140ms var(--ease-out),
+    background-color 140ms ease;
+}
+
+.card-like[data-has-count],
+.card-like[aria-pressed='true'],
+.card-like:focus-visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+
+.card-like:active {
+  transform: translateY(0) scale(0.97);
+}
+
+.card-like-icons {
+  position: relative;
+  display: block;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 15px;
+}
+
+.card-like-icon {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: block;
+  width: 16px;
+  height: 15px;
+  transition:
+    opacity 140ms ease,
+    filter 140ms ease;
+}
+
+.card-like-icon-liked {
+  opacity: 0;
+  filter: blur(var(--blur-small));
+}
+
+.card-like[aria-pressed='true'] .card-like-icon-unliked {
+  opacity: 0;
+  filter: blur(var(--blur-small));
+}
+
+.card-like[aria-pressed='true'] .card-like-icon-liked {
+  opacity: 1;
+  filter: blur(0);
+}
+
+.card-like-burst {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.card-like-particle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: var(--burst-size, 3px);
+  height: var(--burst-size, 3px);
+  border-radius: 50%;
+  background: var(--burst-color);
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.8);
+}
+
+.card-like-particle:nth-child(1),
+.card-like-particle:nth-child(4),
+.card-like-particle:nth-child(7) {
+  --burst-color: #e42e8f;
+}
+
+.card-like-particle:nth-child(2),
+.card-like-particle:nth-child(5),
+.card-like-particle:nth-child(8) {
+  --burst-color: var(--accent);
+}
+
+.card-like-particle:nth-child(3),
+.card-like-particle:nth-child(6),
+.card-like-particle:nth-child(9) {
+  --burst-color: var(--presence-violet);
+}
+
+.card-like-particle:nth-child(1) {
+  --burst-x: -13px;
+  --burst-y: -12px;
+  --burst-size: 2px;
+}
+
+.card-like-particle:nth-child(2) {
+  --burst-x: 0px;
+  --burst-y: -17px;
+  --burst-size: 3px;
+  --burst-delay: 20ms;
+}
+
+.card-like-particle:nth-child(3) {
+  --burst-x: 13px;
+  --burst-y: -12px;
+  --burst-size: 4px;
+  --burst-delay: 35ms;
+}
+
+.card-like-particle:nth-child(4) {
+  --burst-x: 17px;
+  --burst-y: -1px;
+  --burst-size: 3px;
+  --burst-delay: 10ms;
+}
+
+.card-like-particle:nth-child(5) {
+  --burst-x: 13px;
+  --burst-y: 12px;
+  --burst-size: 2px;
+  --burst-delay: 30ms;
+}
+
+.card-like-particle:nth-child(6) {
+  --burst-x: 0px;
+  --burst-y: 17px;
+  --burst-size: 4px;
+}
+
+.card-like-particle:nth-child(7) {
+  --burst-x: -13px;
+  --burst-y: 12px;
+  --burst-size: 3px;
+  --burst-delay: 35ms;
+}
+
+.card-like-particle:nth-child(8) {
+  --burst-x: -17px;
+  --burst-y: 0px;
+  --burst-size: 4px;
+  --burst-delay: 15ms;
+}
+
+.card-like-particle:nth-child(9) {
+  --burst-x: -9px;
+  --burst-y: -16px;
+  --burst-size: 2px;
+  --burst-delay: 45ms;
+}
+
+@keyframes card-like-burst {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.8);
+  }
+  18% {
+    opacity: 1;
+  }
+  72% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(
+        calc(-50% + var(--burst-x)),
+        calc(-50% + var(--burst-y))
+      )
+      scale(0.55);
+  }
+}
+
+.card-like-icons.is-celebrating .card-like-particle {
+  animation: card-like-burst 420ms var(--ease-out) both;
+  animation-delay: var(--burst-delay, 0ms);
+  will-change: transform, opacity;
+}
+
+.card-like-count {
+  display: grid;
+  min-width: 1ch;
+  height: 1em;
+  overflow: hidden;
+  place-items: center;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.card-like-number {
+  grid-area: 1 / 1;
+  opacity: 1;
+  filter: blur(0);
+  transform: translateY(0);
+  transition:
+    opacity 180ms var(--ease-out),
+    filter 180ms var(--ease-out),
+    transform 180ms var(--ease-out);
+}
+
+.card-like-number.is-entering {
+  opacity: 0;
+  filter: blur(var(--blur-small));
+  transform: translateY(80%);
+}
+
+.card-like-number.is-leaving {
+  opacity: 0;
+  filter: blur(var(--blur-small));
+  transform: translateY(-80%);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .card-media:hover .card-like {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    pointer-events: auto;
+  }
+}
+
+@media (hover: none) {
+  .card-like {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
 }
 
 .card-visitors span {
@@ -983,7 +1295,7 @@ html.revealing .sheet {
   transform: translate(-4px, -3px); /* hotspot on the arrow tip */
 }
 
-/* Bullet chat: capsules cross the screen at constant speed (linear — the
+/* Bullet screen: capsules cross the screen at constant speed (linear — the
    correct easing for steady motion). Hover pauses the flight so the Close
    button holds still under the pointer. */
 
@@ -1021,9 +1333,10 @@ html.revealing .sheet {
   animation: bullet-fly 8s linear forwards; /* duration set per bullet in JS */
 }
 
-/* your own messages read back in blue */
-.bullet.is-own span {
-  color: var(--presence-blue);
+/* Your own messages use the same unmistakable live color as Online. */
+.bullet.is-own {
+  background: var(--accent);
+  color: #fff;
 }
 
 .bullet span {
@@ -1049,6 +1362,16 @@ html.revealing .sheet {
 .bullet button:hover {
   background: rgba(17, 17, 20, 0.14);
   color: var(--ink);
+}
+
+.bullet.is-own button {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+
+.bullet.is-own button:hover {
+  background: rgba(255, 255, 255, 0.28);
+  color: #fff;
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -1175,7 +1498,7 @@ html.revealing .sheet {
 .chat-bar input {
   flex: 1;
   min-width: 0;
-  width: min(360px, 70vw);
+  width: min(300px, 60vw);
   padding: 8px 10px;
   border: 0;
   background: none;
@@ -1229,7 +1552,7 @@ html.revealing .sheet {
   gap: 14px;
 }
 
-/* Topbar keyboard hint: a quiet chip that also opens the chat. */
+/* Topbar keyboard hint: a quiet chip that also opens Bullet screen. */
 
 .chat-hint {
   display: inline-flex;
@@ -1275,18 +1598,20 @@ html.revealing .sheet {
   color: var(--ink);
 }
 
-/* The whole pill is the bullet display state. Three clipped runners cross at
-   independent linear rates, echoing the messages themselves without adding
-   another switch inside the button. */
+/* The whole pill is the bullet display state. Once active, five quiet paths
+   cross the full control on independent timelines, explaining the state
+   without reserving a separate icon slot. */
 
 .bullet-mode {
+  position: relative;
+  isolation: isolate;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 9px;
   min-height: 44px;
-  padding: 0 12px 0 14px;
+  padding: 0 14px;
+  overflow: hidden;
   border-radius: var(--radius-pill);
   background: var(--bg);
   box-shadow:
@@ -1304,7 +1629,7 @@ html.revealing .sheet {
 }
 
 .bullet-mode[aria-pressed='true'] {
-  background: var(--ink);
+  background: var(--accent);
   color: #fff;
 }
 
@@ -1312,62 +1637,96 @@ html.revealing .sheet {
   transform: scale(0.97);
 }
 
-.bullet-flow {
+.bullet-mode-label {
   position: relative;
-  flex: 0 0 26px;
-  width: 26px;
-  height: 16px;
-  overflow: hidden;
+  z-index: 1;
+}
+
+.bullet-flow {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  visibility: hidden;
+  opacity: 0;
   pointer-events: none;
+  transition:
+    opacity 120ms ease,
+    visibility 0s linear 120ms;
 }
 
 .bullet-flow-path {
   position: absolute;
   left: 0;
-  top: 2px;
-  width: 8px;
+  top: 5px;
+  width: 20%;
   height: 2px;
   border-radius: var(--radius-pill);
-  background: currentColor;
-  opacity: 0.42;
-  transform: translate3d(3px, 0, 0);
-  transition: opacity var(--duration-quick) ease;
+  background: rgba(255, 255, 255, 0.2);
+  transform: translate3d(-120%, 0, 0);
+  --flow-end: 610%;
 }
 
 .bullet-flow-path:nth-child(2) {
-  top: 7px;
-  width: 12px;
-  transform: translate3d(12px, 0, 0);
+  top: 13px;
+  width: 28%;
+  --flow-end: 440%;
 }
 
 .bullet-flow-path:nth-child(3) {
-  top: 12px;
-  width: 6px;
-  transform: translate3d(7px, 0, 0);
+  top: 22px;
+  width: 16%;
+  --flow-end: 760%;
+}
+
+.bullet-flow-path:nth-child(4) {
+  top: 31px;
+  width: 22%;
+  --flow-end: 560%;
+}
+
+.bullet-flow-path:nth-child(5) {
+  top: 39px;
+  width: 18%;
+  --flow-end: 680%;
 }
 
 @keyframes bullet-mode-flow {
   from {
-    transform: translate3d(-14px, 0, 0);
+    transform: translate3d(-120%, 0, 0);
   }
   to {
-    transform: translate3d(30px, 0, 0);
+    transform: translate3d(var(--flow-end), 0, 0);
   }
+}
+
+.bullet-mode[aria-pressed='true'] .bullet-flow {
+  visibility: visible;
+  opacity: 1;
+  transition-delay: 0s;
 }
 
 .bullet-mode[aria-pressed='true'] .bullet-flow-path {
-  opacity: 0.9;
-  animation: bullet-mode-flow 1.35s linear -0.2s infinite;
+  animation: bullet-mode-flow 1.85s linear -0.12s infinite;
 }
 
 .bullet-mode[aria-pressed='true'] .bullet-flow-path:nth-child(2) {
-  animation-duration: 1.8s;
-  animation-delay: -1.05s;
+  animation-duration: 2.05s;
+  animation-delay: -1.18s;
 }
 
 .bullet-mode[aria-pressed='true'] .bullet-flow-path:nth-child(3) {
   animation-duration: 2.25s;
-  animation-delay: -0.7s;
+  animation-delay: -0.54s;
+}
+
+.bullet-mode[aria-pressed='true'] .bullet-flow-path:nth-child(4) {
+  animation-duration: 2.45s;
+  animation-delay: -1.86s;
+}
+
+.bullet-mode[aria-pressed='true'] .bullet-flow-path:nth-child(5) {
+  animation-duration: 2.15s;
+  animation-delay: -0.92s;
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -1377,7 +1736,7 @@ html.revealing .sheet {
   }
 
   .bullet-mode[aria-pressed='true']:hover {
-    background: #242427;
+    background: var(--accent);
     color: #fff;
   }
 }
@@ -1444,6 +1803,9 @@ html.revealing .sheet {
   .playground-head,
   .playground-source,
   .playground-close,
+  .card-like,
+  .card-like-icon,
+  .card-like-number,
   .card-label,
   .card-open,
   .card-media,
@@ -1462,8 +1824,17 @@ html.revealing .sheet {
   .bullet-flow-path,
   .chat-hint,
   .globe-pop,
+  .globe-chip,
   .online {
     transition-duration: 1ms;
+  }
+
+  .globe-chip,
+  .globe-chip.is-visible,
+  .globe-chip.is-exiting {
+    filter: none;
+    transform: translate(-50%, calc(-100% - 10px));
+    transition-delay: 0s;
   }
 
   .chat-dock {
@@ -1472,6 +1843,17 @@ html.revealing .sheet {
 
   .bullet-mode[aria-pressed='true'] .bullet-flow-path {
     animation: none;
+  }
+
+  .card-like-icons.is-celebrating .card-like-particle {
+    animation: none;
+  }
+
+  .card-like-number,
+  .card-like-number.is-entering,
+  .card-like-number.is-leaving {
+    filter: none;
+    transform: none;
   }
 
   html.booting .sheet {

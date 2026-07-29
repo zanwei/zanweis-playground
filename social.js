@@ -1,13 +1,13 @@
 /**
  * Social layer: the online-count globe and Figma-style cursor chat.
  *
- * Location is inferred from the timezone — continent-level on purpose. No
- * permission prompt, no network call, nothing precise enough to identify
- * anyone. Peers share {lat, lng, label} over the presence channel.
+ * Shared location is inferred from the timezone and remains continent-level.
+ * Opening the globe may use browser geolocation to refine only the viewer's
+ * own marker; precise coordinates never enter the presence channel.
  *
- * The globe is cobe (github.com/shuding/cobe, vendored). Markers carry each
- * visitor's presence color; cobe's anchor divs position the tooltips, so
- * labels track the spinning globe with zero per-frame JS here.
+ * The globe is cobe (github.com/shuding/cobe, vendored). The viewer keeps
+ * their presence color; remote visitors share one blue marker per continent.
+ * Cobe's anchor divs keep every label attached to the spinning globe.
  */
 'use strict';
 
@@ -67,6 +67,103 @@ const Social = (() => {
     Antarctica: [-78, 0, 'Antarctica'],
   };
 
+  const CONTINENTS = {
+    AF: { lat: 5, lng: 20 },
+    AN: { lat: -78, lng: 0 },
+    AS: { lat: 34, lng: 95 },
+    EU: { lat: 51, lng: 15 },
+    NA: { lat: 43, lng: -102 },
+    OC: { lat: -25, lng: 135 },
+    SA: { lat: -15, lng: -60 },
+    XX: { lat: 0, lng: -20 },
+  };
+  const CONTINENT_NAMES = {
+    AF: 'Africa',
+    AN: 'Antarctica',
+    AS: 'Asia',
+    EU: 'Europe',
+    NA: 'North America',
+    OC: 'Oceania',
+    SA: 'South America',
+    XX: 'Unknown',
+  };
+  const CONTINENT_ORDER = ['NA', 'SA', 'EU', 'AF', 'AS', 'OC', 'AN', 'XX'];
+  const SOUTH_AMERICA_TZ =
+    /^(?:America\/(?:Argentina\/.+|Araguaina|Asuncion|Bahia|Belem|Boa_Vista|Bogota|Buenos_Aires|Campo_Grande|Caracas|Catamarca|Cayenne|Cordoba|Coyhaique|Cuiaba|Eirunepe|Fortaleza|Guayaquil|Guyana|Jujuy|La_Paz|Lima|Maceio|Manaus|Mendoza|Montevideo|Noronha|Paramaribo|Porto_Velho|Punta_Arenas|Recife|Rio_Branco|Rosario|Santarem|Santiago|Sao_Paulo)|Atlantic\/(?:South_Georgia|Stanley)|Pacific\/(?:Easter|Galapagos))$/;
+  const TIMEZONE_CONTINENT_EXCEPTIONS = {
+    'Atlantic/Azores': 'EU',
+    'Atlantic/Canary': 'EU',
+    'Atlantic/Faeroe': 'EU',
+    'Atlantic/Faroe': 'EU',
+    'Atlantic/Jan_Mayen': 'EU',
+    'Atlantic/Madeira': 'EU',
+    'Atlantic/Reykjavik': 'EU',
+    'Atlantic/Bermuda': 'NA',
+    'Atlantic/Cape_Verde': 'AF',
+    'Atlantic/St_Helena': 'AF',
+    'Indian/Antananarivo': 'AF',
+    'Indian/Comoro': 'AF',
+    'Indian/Mahe': 'AF',
+    'Indian/Mauritius': 'AF',
+    'Indian/Mayotte': 'AF',
+    'Indian/Reunion': 'AF',
+    'Indian/Chagos': 'AS',
+    'Indian/Christmas': 'AS',
+    'Indian/Cocos': 'AS',
+    'Indian/Maldives': 'AS',
+    'Indian/Kerguelen': 'AN',
+    'Pacific/Honolulu': 'NA',
+  };
+
+  function continentForTimeZone(tz) {
+    if (SOUTH_AMERICA_TZ.test(tz)) return 'SA';
+    if (TIMEZONE_CONTINENT_EXCEPTIONS[tz]) return TIMEZONE_CONTINENT_EXCEPTIONS[tz];
+    return (
+      {
+        Africa: 'AF',
+        America: 'NA',
+        Antarctica: 'AN',
+        Asia: 'AS',
+        Australia: 'OC',
+        Europe: 'EU',
+        Pacific: 'OC',
+      }[tz.split('/')[0]] || 'XX'
+    );
+  }
+
+  function continentCode(loc) {
+    const raw = String(loc?.continent || loc?.label || '')
+      .trim()
+      .toLowerCase();
+
+    if (raw === 'af' || raw.includes('africa')) return 'AF';
+    if (raw === 'an' || raw.includes('antarct')) return 'AN';
+    if (raw === 'as' || raw === 'asia') return 'AS';
+    if (raw === 'eu' || raw.includes('europe')) return 'EU';
+    if (raw === 'na' || raw.includes('north america')) return 'NA';
+    if (
+      raw === 'oc' ||
+      raw.includes('oceania') ||
+      raw.includes('australia') ||
+      raw.includes('pacific')
+    ) {
+      return 'OC';
+    }
+    if (raw === 'sa' || raw.includes('south america')) return 'SA';
+    if (raw === 'xx' || raw.includes('atlantic') || raw.includes('indian ocean')) return 'XX';
+
+    const lat = Number(loc?.lat);
+    const lng = Number(loc?.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return 'XX';
+    if (lat <= -60) return 'AN';
+    if (lng < -25) return lat < 13 ? 'SA' : 'NA';
+    if (lng >= -25 && lng <= 55 && lat >= -38 && lat < 37) return 'AF';
+    if (lng >= -25 && lng <= 45 && lat >= 37) return 'EU';
+    if (lng >= 105 && lat < 0) return 'OC';
+    if (lng >= 25) return 'AS';
+    return 'XX';
+  }
+
   function coarseLocation() {
     let tz = '';
     try {
@@ -74,11 +171,26 @@ const Social = (() => {
     } catch {
       /* fall through to the ocean */
     }
-    const hit = TZ[tz] || REGION[tz.split('/')[0]] || [20, 0, 'the Atlantic Ocean'];
-    return { lat: hit[0], lng: hit[1], label: hit[2] };
+    const inferredContinent = continentForTimeZone(tz);
+    const center = CONTINENTS[inferredContinent];
+    const hit =
+      TZ[tz] ||
+      (inferredContinent !== 'XX' && [
+        center.lat,
+        center.lng,
+        CONTINENT_NAMES[inferredContinent],
+      ]) ||
+      REGION[tz.split('/')[0]] ||
+      [20, 0, 'the Atlantic Ocean'];
+    const loc = { lat: hit[0], lng: hit[1], label: hit[2] };
+    return {
+      ...loc,
+      continent: inferredContinent === 'XX' ? continentCode(loc) : inferredContinent,
+    };
   }
 
-  const location = coarseLocation();
+  const sharedLocation = coarseLocation();
+  const selfLocation = { ...sharedLocation };
 
   // --- presence plumbing ----------------------------------------------------
 
@@ -111,6 +223,56 @@ const Social = (() => {
   let closeTimer = null;
   let phi = 0;
   let focusPhi = 0;
+  let globeTheta = 0.1;
+  let focusTheta = 0.1;
+  let focusingSelf = false;
+  let preciseLocationState = 'idle';
+
+  function requestPreciseLocation() {
+    if (
+      preciseLocationState === 'loading' ||
+      preciseLocationState === 'ready' ||
+      preciseLocationState === 'denied' ||
+      !window.isSecureContext ||
+      !navigator.geolocation
+    ) {
+      return;
+    }
+    preciseLocationState = 'loading';
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => {
+        const lat = Number(coords.latitude);
+        const lng = Number(coords.longitude);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+          preciseLocationState = 'idle';
+          return;
+        }
+        const preciseLat = Math.max(-90, Math.min(90, lat));
+        const preciseLng = ((lng + 540) % 360) - 180;
+        Object.assign(selfLocation, {
+          lat: preciseLat,
+          lng: preciseLng,
+          label: 'Your location',
+          // Derive this from the new coordinates rather than retaining the
+          // timezone-based value copied into selfLocation at startup.
+          continent: continentCode({ lat: preciseLat, lng: preciseLng }),
+        });
+        preciseLocationState = 'ready';
+        // This changes only the local marker. The shared coarse location
+        // remains untouched so exact coordinates never leave the browser.
+        focusOnSelf({ immediate: !popOpen || !globe });
+        syncMarkerEntries({ animateExits: false });
+      },
+      (error) => {
+        preciseLocationState = error?.code === 1 ? 'denied' : 'idle';
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 8000,
+        maximumAge: 300000,
+      }
+    );
+  }
 
   // From the cobe docs: angles that bring [lat, lng] to the front.
   const focusAngles = (lat, lng) => [
@@ -118,62 +280,200 @@ const Social = (() => {
     (lat * Math.PI) / 180,
   ];
 
-  function markerList() {
-    const markers = [
-      { id: 'self', location: [location.lat, location.lng], size: 0.09, color: rgb01(hexOf(selfColor) === '#111114' ? '#f5560c' : hexOf(selfColor)) },
-    ];
-    peerLocations.forEach((p, i) => {
-      // Past ~60 dots the globe is visually saturated — and each marker is
-      // a cobe anchor div cobe repositions every frame.
-      if (!p.loc || markers.length > 60) return;
-      markers.push({
-        id: `peer-${i}`,
-        location: [p.loc.lat, p.loc.lng],
-        size: 0.07,
-        color: rgb01(hexOf(p.color)),
-      });
-    });
-    return markers;
+  function focusOnSelf({ immediate = false } = {}) {
+    const [nextPhi, nextTheta] = focusAngles(selfLocation.lat, selfLocation.lng);
+    const turn = Math.PI * 2;
+    // Choose the nearest equivalent rotation so an async geolocation result
+    // never sends the globe the long way around.
+    focusPhi =
+      phi + ((((nextPhi - phi + Math.PI) % turn) + turn) % turn - Math.PI);
+    focusTheta = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, nextTheta));
+    dragOffset = 0;
+    dragTarget = 0;
+    focusingSelf = !immediate;
+    if (immediate) {
+      phi = focusPhi;
+      globeTheta = focusTheta;
+    }
   }
 
-  let chipRefs = []; // [{ chip, lng }] — visibility computed from phi per frame
+  function desiredMarkerEntries() {
+    const selfHex = hexOf(selfColor) === '#111114' ? PRESENCE_HEX.orange : hexOf(selfColor);
+    const selfContinent = continentCode(selfLocation);
+    const entries = [
+      {
+        id: 'self',
+        lat: selfLocation.lat,
+        lng: selfLocation.lng,
+        label: 'You’re here',
+        size: 0.09,
+        color: rgb01(selfHex),
+        placement: 'above',
+      },
+    ];
+    const groups = new Map();
+
+    for (const peer of peerLocations) {
+      if (!peer?.loc) continue;
+      const code = continentCode(peer.loc);
+      groups.set(code, (groups.get(code) || 0) + 1);
+    }
+
+    for (const code of CONTINENT_ORDER) {
+      const count = groups.get(code);
+      if (!count) continue;
+      const center = CONTINENTS[code];
+      entries.push({
+        id: `continent-${code.toLowerCase()}`,
+        lat: center.lat,
+        lng: center.lng,
+        label: code === 'XX' ? `Other · ${count}` : `${code} · ${count}`,
+        size: Math.min(0.13, 0.07 + Math.log2(count + 1) * 0.012),
+        color: rgb01(PRESENCE_HEX.blue),
+        placement: code === selfContinent ? 'below' : 'above',
+      });
+    }
+
+    return entries;
+  }
+
+  const CHIP_EXIT_MS = 150;
+  const renderedMarkers = new Map();
+  let chipRefs = new Map(); // marker id -> { chip, lat, lng }
   let chipRetry = null;
 
-  // cobe creates its anchor divs on its own schedule; retry until they exist.
+  function markerList() {
+    return [...renderedMarkers.values()].map(({ id, lat, lng, size, color }) => ({
+      id,
+      location: [lat, lng],
+      size,
+      color,
+    }));
+  }
+
+  function refreshGlobeMarkers() {
+    if (!globe) return;
+    globe.update({ markers: markerList() });
+    attachChipsSoon();
+  }
+
+  function finishMarkerExit(id, entry) {
+    if (renderedMarkers.get(id) !== entry || !entry.exiting) return;
+    renderedMarkers.delete(id);
+    chipRefs.delete(id);
+    refreshGlobeMarkers();
+  }
+
+  function syncMarkerEntries({ animateExits = popOpen && !reduceMotion.matches } = {}) {
+    const desired = new Map(desiredMarkerEntries().map((entry) => [entry.id, entry]));
+
+    for (const [id, next] of desired) {
+      const current = renderedMarkers.get(id);
+      if (current) {
+        clearTimeout(current.exitTimer);
+        Object.assign(current, next, { exiting: false, exitTimer: null });
+        chipRefs.get(id)?.chip.classList.remove('is-exiting');
+      } else {
+        renderedMarkers.set(id, { ...next, exiting: false, exitTimer: null });
+      }
+    }
+
+    for (const [id, current] of renderedMarkers) {
+      if (desired.has(id) || current.exiting) continue;
+      if (!animateExits) {
+        clearTimeout(current.exitTimer);
+        renderedMarkers.delete(id);
+        chipRefs.delete(id);
+        continue;
+      }
+      current.exiting = true;
+      chipRefs.get(id)?.chip.classList.add('is-exiting');
+      current.exitTimer = setTimeout(
+        () => finishMarkerExit(id, current),
+        CHIP_EXIT_MS + 20
+      );
+    }
+
+    refreshGlobeMarkers();
+  }
+
+  function chipsAreAttached() {
+    return (
+      chipRefs.size === renderedMarkers.size &&
+      [...chipRefs.values()].every(({ chip }) => chip.isConnected)
+    );
+  }
+
+  // Cobe creates its anchor divs on its own schedule; retry until every
+  // stable marker id has a matching anchor.
   function attachChipsSoon() {
     clearInterval(chipRetry);
+    attachChips();
+    if (chipsAreAttached()) return;
     let tries = 0;
     chipRetry = setInterval(() => {
       attachChips();
-      if (chipRefs.length > 0 || ++tries > 16 || !popOpen) {
+      if (chipsAreAttached() || ++tries > 16 || !popOpen) {
         clearInterval(chipRetry);
       }
     }, 120);
   }
 
   function attachChips() {
-    // Only the viewer gets a label — "You're here" riding the self anchor
-    // (markers[0]). Peers stay as plain colored dots on the sphere.
-    chipRefs = [];
-    const anchors = [...wrap.querySelectorAll('div')].filter((d) => d.style.width === '1px');
-    const anchor = anchors[0];
-    if (!anchor) return;
-    anchor.querySelector('.globe-chip')?.remove();
-    const chip = document.createElement('span');
-    chip.className = 'globe-chip';
-    chip.textContent = 'You’re here';
-    chip.style.visibility = 'hidden';
-    anchor.appendChild(chip);
-    chipRefs.push({ chip, lng: location.lng });
+    const anchors = new Map();
+    for (const candidate of wrap.querySelectorAll('div')) {
+      const name = candidate.style.getPropertyValue('anchor-name');
+      if (name.startsWith('--cobe-')) anchors.set(name.slice('--cobe-'.length), candidate);
+    }
+
+    const nextRefs = new Map();
+    for (const entry of renderedMarkers.values()) {
+      const anchor = anchors.get(entry.id);
+      if (!anchor) continue;
+      let record = chipRefs.get(entry.id);
+      if (!record) {
+        const chip = document.createElement('span');
+        chip.className = 'globe-chip';
+        chip.dataset.marker = entry.id;
+        record = { chip, lat: entry.lat, lng: entry.lng };
+      }
+      record.lat = entry.lat;
+      record.lng = entry.lng;
+      record.chip.textContent = entry.label;
+      record.chip.dataset.placement = entry.placement;
+      record.chip.classList.toggle('is-exiting', entry.exiting);
+      if (record.chip.parentElement !== anchor) anchor.appendChild(record.chip);
+      nextRefs.set(entry.id, record);
+    }
+    chipRefs = nextRefs;
     updateChipVisibility(); // correct visibility before the first spin frame
   }
 
-  function updateChipVisibility() {
-    // A chip shows while its marker is on the front hemisphere.
+  function markerFront(lat, lng) {
+    const latRad = (lat * Math.PI) / 180;
+    const lngRad = (lng * Math.PI) / 180 - Math.PI;
+    const cosLat = Math.cos(latRad);
+    const x = -cosLat * Math.cos(lngRad);
+    const y = Math.sin(latRad);
+    const z = cosLat * Math.sin(lngRad);
     const shown = phi + dragOffset;
-    for (const { chip, lng } of chipRefs) {
-      const front = Math.cos(shown - focusAngles(0, lng)[0]);
-      chip.style.visibility = front > 0.12 ? 'visible' : 'hidden';
+    return (
+      -Math.sin(shown) * Math.cos(globeTheta) * x +
+      Math.sin(globeTheta) * y +
+      Math.cos(shown) * Math.cos(globeTheta) * z
+    );
+  }
+
+  function updateChipVisibility() {
+    // Class changes, rather than discrete visibility writes, give chips a
+    // soft blur/fade as their marker rotates behind the globe.
+    for (const [id, { chip, lat, lng }] of chipRefs) {
+      const entry = renderedMarkers.get(id);
+      if (!entry || entry.exiting) {
+        chip.classList.remove('is-visible');
+        continue;
+      }
+      chip.classList.toggle('is-visible', markerFront(lat, lng) > 0.12);
     }
   }
 
@@ -183,8 +483,17 @@ const Social = (() => {
     clearTimeout(closeTimer);
     pop.hidden = false;
     void pop.offsetWidth;
+    pop.classList.remove('is-closing');
     pop.classList.add('is-open');
     btn.setAttribute('aria-expanded', 'true');
+
+    // Reopening during the close transition revives the existing WebGL
+    // instance instead of orphaning it behind a newly-created canvas.
+    if (globe) {
+      syncMarkerEntries({ animateExits: false });
+      spin();
+      return;
+    }
 
     const size = 280 * Math.min(2, devicePixelRatio || 1);
     const canvas = document.createElement('canvas');
@@ -193,16 +502,15 @@ const Social = (() => {
     wrap.replaceChildren(canvas);
     bindDrag(canvas);
 
-    [focusPhi] = focusAngles(location.lat, location.lng);
-    phi = focusPhi;
-    const [, theta] = focusAngles(location.lat, location.lng);
+    focusOnSelf({ immediate: true });
+    syncMarkerEntries({ animateExits: false });
 
     globe = window.createGlobe(canvas, {
       devicePixelRatio: Math.min(2, devicePixelRatio || 1),
       width: size,
       height: size,
       phi,
-      theta: Math.max(0.1, theta * 0.7),
+      theta: globeTheta,
       dark: 0,
       diffuse: 1.2,
       mapSamples: 14000,
@@ -210,6 +518,7 @@ const Social = (() => {
       baseColor: [0.92, 0.92, 0.93],
       markerColor: [0.96, 0.34, 0.05],
       glowColor: [1, 1, 1],
+      scale: 1.22,
       markers: markerList(),
     });
     attachChipsSoon();
@@ -254,11 +563,25 @@ const Social = (() => {
       if (!popOpen || !globe) return;
       const dt = Math.min(64, now - (spinLast || now));
       spinLast = now;
-      if (!reduceMotion.matches && dragging === null) phi += 0.00017 * dt;
+      if (focusingSelf) {
+        const focusK = reduceMotion.matches ? 1 : 1 - Math.exp(-dt / 180);
+        phi += (focusPhi - phi) * focusK;
+        globeTheta += (focusTheta - globeTheta) * focusK;
+        if (
+          Math.abs(focusPhi - phi) < 0.001 &&
+          Math.abs(focusTheta - globeTheta) < 0.001
+        ) {
+          phi = focusPhi;
+          globeTheta = focusTheta;
+          focusingSelf = false;
+        }
+      } else if (!reduceMotion.matches && dragging === null) {
+        phi += 0.00017 * dt;
+      }
       // Damped approach: interruptible, carries a little momentum.
       const k = reduceMotion.matches ? 1 : 1 - Math.exp(-dt / 90);
       dragOffset += (dragTarget - dragOffset) * k;
-      globe.update({ phi: phi + dragOffset });
+      globe.update({ phi: phi + dragOffset, theta: globeTheta });
       updateChipVisibility();
       spinId = requestAnimationFrame(step);
     };
@@ -275,14 +598,37 @@ const Social = (() => {
     closeTimer = setTimeout(() => {
       pop.classList.remove('is-closing');
       pop.hidden = true;
+      clearInterval(chipRetry);
+      for (const entry of renderedMarkers.values()) clearTimeout(entry.exitTimer);
+      renderedMarkers.clear();
+      chipRefs.clear();
       globe?.destroy(); // the globe never burns frames while closed
       globe = null;
       wrap.replaceChildren();
-    }, 180);
+      dragging = null;
+      dragOffset = 0;
+      dragTarget = 0;
+      focusingSelf = false;
+    }, reduceMotion.matches ? 0 : 180);
   }
 
   if (btn && pop) {
-    btn.addEventListener('click', () => (popOpen ? closePop() : openPop()));
+    btn.addEventListener('click', () => {
+      if (!popOpen) requestPreciseLocation();
+      if (popOpen) closePop();
+      else openPop();
+    });
+    // Reuse an existing grant without showing a prompt during page load.
+    if (navigator.permissions?.query) {
+      navigator.permissions
+        .query({ name: 'geolocation' })
+        .then(({ state }) => {
+          if (state === 'granted') requestPreciseLocation();
+        })
+        .catch(() => {
+          /* Permissions API support is optional; the click path still works. */
+        });
+    }
     document.addEventListener('pointerdown', (e) => {
       if (popOpen && !pop.contains(e.target) && !btn.contains(e.target)) closePop();
     });
@@ -291,7 +637,7 @@ const Social = (() => {
     });
   }
 
-  // --- bullet chat (press / to talk) ---------------------------------------
+  // --- bullet screen (press / to talk) -------------------------------------
   //
   // Sent text crosses the screen left-to-right at constant speed (linear —
   // the one easing that's correct for steady motion). Hovering a bullet
@@ -307,11 +653,11 @@ const Social = (() => {
   bulletLayer.className = 'bullet-layer';
   document.body.appendChild(bulletLayer);
 
-  let bulletsOn = true;
+  let bulletsOn = false;
   try {
-    bulletsOn = localStorage.getItem('zw-bullets') !== '0';
+    bulletsOn = localStorage.getItem('zw-bullets') === '1';
   } catch {
-    /* private mode: default on */
+    /* private mode: default off */
   }
 
   const CLOSE_SVG = `<svg width="10" height="10" viewBox="0 0 24 24" aria-hidden="true">
@@ -427,14 +773,22 @@ const Social = (() => {
   let barInput = null;
   let barSend = null;
   let barOpen = false;
+  const chatHint = document.getElementById('chat-hint');
+
+  function syncBarTrigger() {
+    if (!chatHint) return;
+    chatHint.setAttribute('aria-expanded', String(barOpen));
+    chatHint.title = barOpen ? 'Close Bullet screen' : 'Open Bullet screen';
+  }
 
   function ensureBar() {
     if (barEl) return;
     barEl = document.createElement('div');
+    barEl.id = 'chat-dock';
     barEl.className = 'chat-dock';
     barEl.innerHTML =
       `<div class="chat-bar">
-        <input type="text" maxlength="120" placeholder="Say something" aria-label="Bullet chat message" />
+        <input type="text" maxlength="120" placeholder="Say something" aria-label="Bullet screen message" />
         <button class="chat-send" aria-label="Send" disabled>
           <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 19V6M6 12l6-6 6 6" stroke="currentColor" stroke-width="2.2" fill="none"
@@ -442,10 +796,12 @@ const Social = (() => {
           </svg>
         </button>
       </div>
-      <button class="bullet-mode" id="bullet-toggle" type="button" aria-label="Bullet chat"
-        aria-pressed="true" title="Hide bullet chat">
-        <span class="bullet-mode-label">Bullet chat</span>
+      <button class="bullet-mode" id="bullet-toggle" type="button" aria-label="Bullet screen"
+        aria-pressed="false" title="Show Bullet screen">
+        <span class="bullet-mode-label">Bullet screen</span>
         <span class="bullet-flow" aria-hidden="true">
+          <span class="bullet-flow-path" data-bullet-path></span>
+          <span class="bullet-flow-path" data-bullet-path></span>
           <span class="bullet-flow-path" data-bullet-path></span>
           <span class="bullet-flow-path" data-bullet-path></span>
           <span class="bullet-flow-path" data-bullet-path></span>
@@ -461,7 +817,7 @@ const Social = (() => {
       if (!text) return;
       presence?.say(text);
       spawnBullet(text, true);
-      if (!bulletsOn) showToast('Message sent — turn on Bullet chat to see it here');
+      if (!bulletsOn) showToast('Message sent — turn on Bullet screen to see it here');
       barInput.value = '';
       barSend.disabled = true;
       barInput.focus({ preventScroll: true });
@@ -483,7 +839,13 @@ const Social = (() => {
       if (!barOpen) return;
       // Dismissing a bullet is part of the chat surface — only a click on the
       // page itself closes the composer.
-      if (barEl.contains(e.target) || e.target.closest('.bullet')) return;
+      if (
+        barEl.contains(e.target) ||
+        chatHint?.contains(e.target) ||
+        e.target.closest('.bullet')
+      ) {
+        return;
+      }
       closeBar();
     });
   }
@@ -500,6 +862,7 @@ const Social = (() => {
       barEl.classList.remove('is-instant');
     }
     barInput.focus({ preventScroll: true });
+    syncBarTrigger();
   }
 
   function closeBar(instant = false) {
@@ -512,19 +875,26 @@ const Social = (() => {
     if (instant) {
       barEl.hidden = true;
       barEl.classList.remove('is-instant');
+      syncBarTrigger();
       return;
     }
+    syncBarTrigger();
     setTimeout(() => {
       if (!barOpen) barEl.hidden = true;
     }, 200);
   }
 
+  function toggleBar(instant = false) {
+    if (barOpen) closeBar(instant);
+    else openBar(instant);
+  }
+
   addEventListener('keydown', (e) => {
-    if (e.key !== '/' || barOpen) return;
+    if (e.key !== '/') return;
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
     e.preventDefault();
-    openBar(true);
+    toggleBar(true);
   });
 
   function clearBulletDisplay() {
@@ -543,7 +913,7 @@ const Social = (() => {
     if (!button) return;
     const render = () => {
       button.setAttribute('aria-pressed', String(bulletsOn));
-      button.title = bulletsOn ? 'Hide bullet chat' : 'Show bullet chat';
+      button.title = bulletsOn ? 'Hide Bullet screen' : 'Show Bullet screen';
     };
     button.addEventListener('click', () => {
       bulletsOn = !bulletsOn;
@@ -559,25 +929,23 @@ const Social = (() => {
   }
 
   // Topbar hint chip: another way in, for people who never guess "/".
-  document.getElementById('chat-hint')?.addEventListener('click', () => openBar());
+  chatHint?.addEventListener('click', () => toggleBar());
+  syncBarTrigger();
 
   // --- wiring ---------------------------------------------------------------
 
   return {
-    location,
+    location: sharedLocation,
     bind(p) {
       presence = p;
     },
     onSelf({ color }) {
       selfColor = color;
-      if (globe) globe.update({ markers: markerList() });
+      syncMarkerEntries();
     },
     onLocations(list) {
-      peerLocations = list;
-      if (globe) {
-        globe.update({ markers: markerList() });
-        attachChipsSoon();
-      }
+      peerLocations = Array.isArray(list) ? list : [];
+      syncMarkerEntries();
     },
     onBullet({ text }) {
       spawnBullet(text, false);

@@ -27,11 +27,59 @@ const Presence = (() => {
       getComputedStyle(document.documentElement).getPropertyValue('--duration-quick')
     ) || 150) + 30;
   const COLORS = ['orange', 'violet', 'green', 'pink', 'blue', 'amber'];
+  const LIKE_CARDS = new Set([
+    'status-indicator',
+    'ball-model-picker',
+    'dialog',
+    'claude-model-selector',
+    'liquid-connector',
+    'model-picker',
+    'table-of-content',
+    'chatgpt-model-selector',
+    'dia-logo',
+    'linear-logo',
+    'fontdetector-logo',
+    'clear-logo',
+    'macintosh-logo',
+    'affine-logo',
+    'affine-hero',
+    'bridge',
+  ]);
+  const LIKE_CLIENT_KEY = 'zw-like-client-v1';
+  const LIKE_MINE_KEY = 'zw-like-mine-v1';
+  const CLIENT_ID_RE = /^[A-Za-z0-9_-]{16,64}$/;
 
   // Peers announce a color NAME; the stylesheet owns the actual values.
   const cssColor = (c) => (c && c.startsWith('#') ? c : `var(--presence-${c || 'blue'})`);
 
   const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+
+  function stableLikeClientId() {
+    try {
+      const stored = localStorage.getItem(LIKE_CLIENT_KEY);
+      if (stored && CLIENT_ID_RE.test(stored)) return stored;
+      const created =
+        crypto.randomUUID?.() ||
+        `${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}_${Math.random()
+          .toString(36)
+          .slice(2)}`;
+      localStorage.setItem(LIKE_CLIENT_KEY, created);
+      return created;
+    } catch {
+      return `${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}_${Math.random()
+        .toString(36)
+        .slice(2)}`;
+    }
+  }
+
+  function storedLikes() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(LIKE_MINE_KEY) || '[]');
+      return new Set(Array.isArray(parsed) ? parsed.filter((card) => LIKE_CARDS.has(card)) : []);
+    } catch {
+      return new Set();
+    }
+  }
 
   // --- cursor rendering ----------------------------------------------------
 
@@ -157,7 +205,17 @@ const Presence = (() => {
 
   // --- main ----------------------------------------------------------------
 
-  function start({ onCount, onFocus, onSelf, onLocations, onBullet, onSpray, loc } = {}) {
+  function start({
+    onCount,
+    onFocus,
+    onSelf,
+    onLocations,
+    onBullet,
+    onSpray,
+    onLikes,
+    onLike,
+    loc,
+  } = {}) {
     const overlay = document.createElement('div');
     overlay.className = 'presence-overlay';
     overlay.setAttribute('aria-hidden', 'true');
@@ -182,12 +240,129 @@ const Presence = (() => {
     const cursors = new Map(); // peerId -> RemoteCursor
     const focuses = new Map(); // peerId -> { card, color }
     const locations = new Map(); // peerId -> { color, loc }
+    const likeClientId = stableLikeClientId();
+    const likeCounts = new Map();
+    const myLikes = storedLikes();
+    const pendingLikes = new Map(); // card -> desired boolean, until server ack
+    const likeRetryTimers = new Map();
     let send = () => {};
+    let transport = 'pending';
     let myId = null;
     let myFocus = null; // replayed once the transport comes up (deep links)
 
     function notifyLocations() {
       if (onLocations) onLocations([...locations.values()]);
+    }
+
+    function persistMyLikes() {
+      try {
+        localStorage.setItem(LIKE_MINE_KEY, JSON.stringify([...myLikes]));
+      } catch {
+        /* storage is best-effort; the server remains authoritative */
+      }
+    }
+
+    function likeSnapshot() {
+      return {
+        counts: Object.fromEntries(likeCounts),
+        mine: [...myLikes],
+      };
+    }
+
+    function notifyLike(card) {
+      if (!onLike) return;
+      onLike({
+        card,
+        count: likeCounts.get(card) || 0,
+        on: myLikes.has(card),
+      });
+    }
+
+    function applyLikeSnapshot(snapshot) {
+      const nextCounts = new Map();
+      for (const [card, count] of Object.entries(snapshot?.counts || {})) {
+        if (!LIKE_CARDS.has(card)) continue;
+        nextCounts.set(card, Math.max(0, Math.floor(Number(count) || 0)));
+      }
+
+      const nextMine = new Set(
+        Array.isArray(snapshot?.mine)
+          ? snapshot.mine.filter((card) => LIKE_CARDS.has(card))
+          : []
+      );
+
+      // A click made while the connection was coming up stays optimistic.
+      // Overlay that desired SET on the authoritative snapshot, then send it.
+      for (const [card, desired] of pendingLikes) {
+        const serverOn = nextMine.has(card);
+        if (desired !== serverOn) {
+          nextCounts.set(
+            card,
+            Math.max(0, (nextCounts.get(card) || 0) + (desired ? 1 : -1))
+          );
+        }
+        if (desired) nextMine.add(card);
+        else nextMine.delete(card);
+      }
+
+      likeCounts.clear();
+      for (const [card, count] of nextCounts) likeCounts.set(card, count);
+      myLikes.clear();
+      for (const card of nextMine) myLikes.add(card);
+      persistMyLikes();
+      if (onLikes) onLikes(likeSnapshot());
+    }
+
+    function applyLikeMessage(msg) {
+      if (!LIKE_CARDS.has(msg.card)) return;
+      let count = Math.max(0, Math.floor(Number(msg.count) || 0));
+
+      if (typeof msg.on === 'boolean') {
+        const desired = pendingLikes.get(msg.card);
+        if (desired === msg.on) {
+          pendingLikes.delete(msg.card);
+          clearTimeout(likeRetryTimers.get(msg.card));
+          likeRetryTimers.delete(msg.card);
+        } else if (typeof desired === 'boolean') {
+          // This is an ack for an older SET. Preserve the latest click while
+          // adjusting the server count to the state currently shown locally.
+          count = Math.max(0, count + (desired ? 1 : -1));
+          transmitLike(msg.card, desired);
+        }
+
+        const effective = pendingLikes.has(msg.card) ? pendingLikes.get(msg.card) : msg.on;
+        if (effective) myLikes.add(msg.card);
+        else myLikes.delete(msg.card);
+      }
+
+      likeCounts.set(msg.card, count);
+      persistMyLikes();
+      notifyLike(msg.card);
+    }
+
+    function transmitLike(card, on) {
+      if (transport === 'pending') return;
+      send({ t: 'like', card, on, count: likeCounts.get(card) || 0 });
+
+      if (transport === 'tabs' || transport === 'solo') {
+        pendingLikes.delete(card);
+        return;
+      }
+
+      // The transport enforces a small per-peer ingest floor. If a user
+      // reverses a like faster than that floor, retry the latest idempotent
+      // SET until its authoritative acknowledgement arrives.
+      clearTimeout(likeRetryTimers.get(card));
+      likeRetryTimers.set(
+        card,
+        setTimeout(() => {
+          if (pendingLikes.get(card) === on) transmitLike(card, on);
+        }, 160)
+      );
+    }
+
+    function flushPendingLikes() {
+      for (const [card, on] of pendingLikes) transmitLike(card, on);
     }
 
     function peerCursor(id, color) {
@@ -243,6 +418,14 @@ const Presence = (() => {
         case 'spray':
           if (onSpray) onSpray({ id: String(msg.id), on: !!msg.on });
           break;
+        case 'like':
+          applyLikeMessage(msg);
+          break;
+        case 'likes':
+          for (const [card, count] of Object.entries(msg.counts || {})) {
+            applyLikeMessage({ t: 'like', card, count });
+          }
+          break;
         case 'idle': {
           // Backgrounded, not gone: retract the cursor, keep the location.
           const c = cursors.get(msg.id);
@@ -291,7 +474,9 @@ const Presence = (() => {
       let ws;
       try {
         const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
-        ws = new WebSocket(`${scheme}://${location.host}/presence/ws`);
+        ws = new WebSocket(
+          `${scheme}://${location.host}/presence/ws?client=${encodeURIComponent(likeClientId)}`
+        );
       } catch {
         startSSE();
         return;
@@ -302,9 +487,10 @@ const Presence = (() => {
         const msg = JSON.parse(e.data);
         if (msg.t === 'hello') {
           opened = true;
+          transport = 'ws';
           myId = msg.id;
           if (onSelf) onSelf({ color: cssColor(msg.color), transport: 'ws' });
-          for (const peer of msg.peers) {
+          for (const peer of msg.peers || []) {
             if (peer.last) handle({ ...peer.last, color: peer.color });
             if (peer.loc) handle({ t: 'loc', id: peer.id, color: peer.color, loc: peer.loc });
           }
@@ -312,6 +498,8 @@ const Presence = (() => {
           send = (payload) => {
             if (ws.readyState === 1) ws.send(JSON.stringify(payload));
           };
+          applyLikeSnapshot(msg.likes);
+          flushPendingLikes();
           if (myFocus) send({ t: 'focus', card: myFocus });
           if (loc) send({ t: 'loc', loc });
         } else if (msg.t === 'count') {
@@ -339,6 +527,7 @@ const Presence = (() => {
         // peers and reconnect with a fresh socket.
         for (const id of [...cursors.keys()]) dropPeer(id);
         for (const id of [...focuses.keys()]) dropPeer(id);
+        transport = 'pending';
         send = () => {};
         if (onCount) onCount(1);
         setTimeout(startWS, 1800);
@@ -346,7 +535,9 @@ const Presence = (() => {
     }
 
     function startSSE() {
-      const es = new EventSource('/presence/stream');
+      const es = new EventSource(
+        `/presence/stream?client=${encodeURIComponent(likeClientId)}`
+      );
       let opened = false;
       let myToken = null;
 
@@ -354,10 +545,11 @@ const Presence = (() => {
         const msg = JSON.parse(e.data);
         if (msg.t === 'hello') {
           opened = true;
+          transport = 'sse';
           myId = msg.id;
           myToken = msg.token;
           if (onSelf) onSelf({ color: cssColor(msg.color), transport: 'sse' });
-          for (const peer of msg.peers) {
+          for (const peer of msg.peers || []) {
             if (peer.last) handle({ ...peer.last, color: peer.color });
             if (peer.loc) handle({ t: 'loc', id: peer.id, color: peer.color, loc: peer.loc });
           }
@@ -368,6 +560,8 @@ const Presence = (() => {
               new Blob([body], { type: 'application/json' })
             ) || fetch('/presence/event', { method: 'POST', body, keepalive: true });
           };
+          applyLikeSnapshot(msg.likes);
+          flushPendingLikes();
           if (myFocus) send({ t: 'focus', card: myFocus });
           if (loc) send({ t: 'loc', loc });
         } else if (msg.t === 'count') {
@@ -390,6 +584,7 @@ const Presence = (() => {
         // just clear peers who are no longer reachable.
         for (const id of [...cursors.keys()]) dropPeer(id);
         for (const id of [...focuses.keys()]) dropPeer(id);
+        transport = 'pending';
         send = () => {};
         if (onCount) onCount(1);
       };
@@ -400,10 +595,16 @@ const Presence = (() => {
       try {
         bc = new BroadcastChannel('zw-playground-presence');
       } catch {
+        transport = 'solo';
         if (onCount) onCount(1);
         if (onSelf) onSelf({ color: '#111114', transport: 'solo' });
+        applyLikeSnapshot({
+          counts: Object.fromEntries([...myLikes].map((card) => [card, 1])),
+          mine: [...myLikes],
+        });
         return;
       }
+      transport = 'tabs';
       myId = Math.random().toString(36).slice(2, 10);
       const myColor = COLORS[Math.abs([...myId].reduce((a, ch) => a + ch.charCodeAt(0), 0)) % COLORS.length];
       if (onSelf) onSelf({ color: cssColor(myColor), transport: 'tabs' });
@@ -433,7 +634,19 @@ const Presence = (() => {
         census();
       };
 
-      send = (payload) => bc.postMessage({ id: myId, color: myColor, loc: loc || null, ...payload });
+      send = (payload) =>
+        bc.postMessage({
+          id: myId,
+          clientId: likeClientId,
+          color: myColor,
+          loc: loc || null,
+          ...payload,
+        });
+      applyLikeSnapshot({
+        counts: Object.fromEntries([...myLikes].map((card) => [card, 1])),
+        mine: [...myLikes],
+      });
+      flushPendingLikes();
       send({ t: 'hb' });
       if (myFocus) send({ t: 'focus', card: myFocus });
       setInterval(() => {
@@ -491,6 +704,25 @@ const Presence = (() => {
       focus(card) {
         myFocus = card;
         send({ t: 'focus', card });
+      },
+      like(card, on) {
+        if (!LIKE_CARDS.has(card) || typeof on !== 'boolean') return;
+        const wasOn = myLikes.has(card);
+        if (wasOn === on) return;
+
+        likeCounts.set(
+          card,
+          Math.max(0, (likeCounts.get(card) || 0) + (on === wasOn ? 0 : on ? 1 : -1))
+        );
+        if (on) myLikes.add(card);
+        else myLikes.delete(card);
+        pendingLikes.set(card, on);
+        persistMyLikes();
+        notifyLike(card);
+
+        if (transport !== 'pending') {
+          transmitLike(card, on);
+        }
       },
       say(text) {
         send({ t: 'bullet', text });
