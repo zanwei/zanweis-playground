@@ -227,16 +227,83 @@
     };
   }
 
-  // Card-click sound. Keep its gain capped and treat playback as best-effort.
-  const clickSound = new Audio('assets/click.m4a'); // AAC: 9.6KB vs the 192KB wav
+  // Card-click sound. Decode the tiny asset before the first interaction so
+  // the first card gets the same low-latency response as every later card.
+  // HTMLAudio stays as a compatibility fallback when Web Audio is unavailable.
+  const CLICK_SOUND_URL = 'assets/click.m4a'; // AAC: 9.6KB vs the 192KB wav
+  const clickSound = new Audio(CLICK_SOUND_URL);
   clickSound.preload = 'auto';
   clickSound.volume = 0.5;
+  clickSound.load();
 
-  function playClick() {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  let clickAudioContext = null;
+  let clickAudioGain = null;
+  let clickAudioBuffer = null;
+
+  if (AudioContextClass) {
+    try {
+      clickAudioContext = new AudioContextClass({ latencyHint: 'interactive' });
+      clickAudioGain = clickAudioContext.createGain();
+      clickAudioGain.gain.value = 0.5;
+      clickAudioGain.connect(clickAudioContext.destination);
+      fetch(CLICK_SOUND_URL)
+        .then((response) => {
+          if (!response.ok) throw new Error(`Click sound returned ${response.status}`);
+          return response.arrayBuffer();
+        })
+        .then((data) => clickAudioContext.decodeAudioData(data))
+        .then((buffer) => {
+          clickAudioBuffer = buffer;
+        })
+        .catch(() => {
+          clickAudioBuffer = null;
+        });
+    } catch {
+      clickAudioContext = null;
+      clickAudioGain = null;
+    }
+  }
+
+  function unlockClickAudio() {
+    if (clickAudioContext?.state !== 'suspended') return;
+    clickAudioContext.resume().catch(() => {
+      /* the HTMLAudio fallback remains available */
+    });
+  }
+
+  addEventListener('pointerdown', unlockClickAudio, { capture: true, passive: true });
+  addEventListener(
+    'keydown',
+    (event) => {
+      if (event.key === 'Enter' || event.key === ' ') unlockClickAudio();
+    },
+    { capture: true }
+  );
+
+  function playFallbackClick() {
     clickSound.currentTime = 0;
     clickSound.play().catch(() => {
       /* autoplay policy or missing file — silence is fine */
     });
+  }
+
+  function playClick() {
+    if (clickAudioContext && clickAudioGain && clickAudioBuffer) {
+      const start = () => {
+        const source = clickAudioContext.createBufferSource();
+        source.buffer = clickAudioBuffer;
+        source.connect(clickAudioGain);
+        source.start();
+      };
+      if (clickAudioContext.state === 'running') {
+        start();
+      } else {
+        clickAudioContext.resume().then(start).catch(playFallbackClick);
+      }
+      return;
+    }
+    playFallbackClick();
   }
 
   function buildCard(item, index) {
