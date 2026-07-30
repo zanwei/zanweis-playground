@@ -2,8 +2,8 @@
 
 A live gallery of eight hand-built web components, laid out after
 [recent.design](https://recent.design): column masonry, a boot intro, and a
-multiplayer layer — shared cursors, Bullet screen, an emoji fountain (hold L),
-and a who's-here globe.
+multiplayer layer — shared cursors, Figma-style Cursor Chat (press /), a
+persistent Bullet screen, an emoji fountain (hold L), and a who's-here globe.
 
 ## Run
 
@@ -47,9 +47,10 @@ message protocol rides all three.
 
 **Everything degrades before it falls over.** Cursor fan-out runs per-event
 in small rooms and coalesces into 20Hz tick frames in crowds; ingest is
-rate-floored per peer; bullets sit behind a token bucket plus a global
-budget; slow consumers are evicted; connections hard-cap at 1200; clients
-adapt their report rate to the room and cap what they render.
+rate-floored per peer; live chat snapshots coalesce independently from bullets,
+which sit behind a token bucket plus a global budget; slow consumers are
+evicted; connections hard-cap at 1200; clients adapt their report rate to the
+room and cap what they render.
 
 ## Components
 
@@ -72,7 +73,7 @@ adapt their report rate to the room and cap what they render.
 - `src/worker.js` — Cloudflare Worker: Workers Assets + Durable Object room
 - `presence.js` — transport ladder, anchor math, remote cursor rendering
 - `app.js` — masonry, FLIP playground modal, count UI, presence wiring
-- `social.js` — globe popover, Bullet screen, toasts
+- `social.js` — globe popover, persistent Bullet screen, Cursor Chat, toasts
 - `fountain.js` — hold-L emoji fountain (pooled particles)
 - `boot.js` / `faces.js` — the shuffling-face intro and its pixel sprites
 - `styles.css` — layout and motion; tokens follow the transitions.dev scale

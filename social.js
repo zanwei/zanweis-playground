@@ -13,6 +13,14 @@
 
 const Social = (() => {
   const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+  const finePointer = matchMedia('(pointer: fine)');
+  const bootInProgress = () => {
+    const root = document.documentElement;
+    return (
+      root.classList.contains('booting') ||
+      root.classList.contains('revealing')
+    );
+  };
 
   // --- coarse location ------------------------------------------------------
 
@@ -697,7 +705,9 @@ const Social = (() => {
   }
 
   function spawnBullet(text, isOwn) {
-    if (!bulletsOn || !text) return;
+    // Bullet chat is transient live state. A message received behind the
+    // loader should not materialize halfway across the screen after reveal.
+    if (bootInProgress() || !bulletsOn || !text) return;
     if (!isOwn && bulletLayer.childElementCount >= MAX_ONSCREEN) {
       noteSuppressed();
       return;
@@ -717,6 +727,13 @@ const Social = (() => {
     b.style.left = `${-w - 8}px`;
 
     const remove = () => b.remove();
+    let restoreComposerFocus = false;
+    close.addEventListener('pointerdown', () => {
+      // The dock is now permanently visible, so visibility no longer means
+      // the visitor was composing a bullet. Restore focus only when this
+      // dismiss action actually interrupted the bullet input.
+      restoreComposerFocus = document.activeElement === barInput;
+    });
     if (reduceMotion.matches) {
       // No flight: rest near the left edge, fade after a readable pause.
       b.style.left = '24px';
@@ -728,7 +745,7 @@ const Social = (() => {
         e.stopPropagation();
         clearTimeout(idle);
         remove();
-        if (barOpen) focusComposerInput();
+        if (restoreComposerFocus) focusComposerInput();
       });
       return;
     }
@@ -743,7 +760,7 @@ const Social = (() => {
       e.stopPropagation();
       b.classList.add('is-out'); // freeze via paused animation + pop out
       setTimeout(remove, 180);
-      if (barOpen) focusComposerInput();
+      if (restoreComposerFocus) focusComposerInput();
     });
   }
 
@@ -900,17 +917,14 @@ const Social = (() => {
     { passive: true }
   );
 
-  function syncBarTrigger() {
-    if (!chatHint) return;
-    chatHint.setAttribute('aria-expanded', String(barOpen));
-    chatHint.title = barOpen ? 'Close Bullet screen' : 'Open Bullet screen';
-  }
-
   function ensureBar() {
     if (barEl) return;
     barEl = document.createElement('div');
     barEl.id = 'chat-dock';
     barEl.className = 'chat-dock';
+    // It is mounted early so its listeners and viewport observers are ready,
+    // but remains out of the render tree until the boot drawer has landed.
+    barEl.hidden = true;
     barEl.innerHTML =
       `<div class="chat-bar">
         <input type="text" maxlength="120" placeholder="Send bullet chat" aria-label="Bullet screen message" />
@@ -986,32 +1000,22 @@ const Social = (() => {
       if (composing || e.isComposing || e.keyCode === 229) return;
       if (e.key === 'Escape') {
         e.stopPropagation();
-        closeBar();
+        barInput.blur();
       } else if (e.key === 'Enter') {
         e.preventDefault();
         doSend();
       }
     });
     barSend.addEventListener('click', doSend);
-    document.addEventListener('pointerdown', (e) => {
-      if (!barOpen) return;
-      // Dismissing a bullet is part of the chat surface — only a click on the
-      // page itself closes the composer.
-      if (
-        barEl.contains(e.target) ||
-        chatHint?.contains(e.target) ||
-        e.target.closest('.bullet')
-      ) {
-        return;
-      }
-      closeBar();
-    });
   }
 
   function openBar(instant = false, focus = true) {
     ensureBar();
     barOpen = true;
     barEl.hidden = false;
+    // Resolve the mobile visual-viewport anchor before exposing the entrance
+    // frame, so browser chrome or an open keyboard cannot make it jump once.
+    applyComposerViewportPosition();
     if (instant) barEl.classList.add('is-instant');
     void barEl.offsetWidth;
     barEl.classList.add('is-on');
@@ -1024,47 +1028,7 @@ const Social = (() => {
     if (focus) focusComposerInput();
     else scheduleComposerViewportSync(true);
     composerLayout = measureComposerLayout();
-    syncBarTrigger();
   }
-
-  function closeBar(instant = false) {
-    if (!barOpen) return;
-    barOpen = false;
-    barInput.value = '';
-    barSend.disabled = true;
-    if (document.activeElement === barInput) barInput.blur();
-    if (instant) barEl.classList.add('is-instant');
-    barEl.classList.remove('is-on');
-    if (instant) {
-      barEl.hidden = true;
-      barEl.classList.remove('is-instant');
-      clearComposerViewportTimers();
-      resetComposerViewportPosition();
-      syncBarTrigger();
-      return;
-    }
-    syncBarTrigger();
-    setTimeout(() => {
-      if (!barOpen) {
-        barEl.hidden = true;
-        clearComposerViewportTimers();
-        resetComposerViewportPosition();
-      }
-    }, 200);
-  }
-
-  function toggleBar(instant = false) {
-    if (barOpen) closeBar(instant);
-    else openBar(instant);
-  }
-
-  addEventListener('keydown', (e) => {
-    if (e.key !== '/') return;
-    const t = e.target;
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-    e.preventDefault();
-    toggleBar(true);
-  });
 
   function clearBulletDisplay() {
     bulletLayer.replaceChildren();
@@ -1104,9 +1068,1041 @@ const Social = (() => {
     renderBulletMode();
   }
 
+  // --- cursor chat -----------------------------------------------------------
+  //
+  // This is a live state, not a message composer: there is no send action.
+  // The local native input follows the real pointer; peers render the same
+  // state beside the already-shared presence cursor.
+
+  const CURSOR_CHAT_TTL_MS = 5000;
+  const CURSOR_CHAT_FADE_MS =
+    parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue(
+        '--duration-cursor-chat'
+      )
+    ) || 320;
+  const CURSOR_CHAT_SYNC_MS = 50;
+  const CURSOR_CHAT_MAX_POINTS = 120;
+  const CURSOR_CHAT_EDGE = 12;
+  const CURSOR_CHAT_GAP_X = 12;
+  const CURSOR_CHAT_GAP_Y = 14;
+  const CURSOR_CHAT_MIN_INPUT_PX = 96;
+  const CURSOR_CHAT_FLIP_HYSTERESIS = 22;
+  const CURSOR_CHAT_CONTROL_RE = /[\u0000-\u001f\u007f]/gu;
+  const CUSTOM_CURSOR_ACTIVE_ATTR = 'data-custom-cursor-active';
+  const CUSTOM_CURSOR_DOM_ATTR = 'data-custom-cursor-dom';
+  const CUSTOM_CURSOR_STYLE_ATTR = 'data-custom-cursor-style';
+  const CUSTOM_CURSOR_SHADOW_STYLE_ATTR = 'data-custom-cursor-shadow-style';
+  const CUSTOM_CURSOR_PATH =
+    'M5.09 5.36 10.48 20.73c.3.86 1.5.9 1.86.06l2.68-6.24a1 1 0 0 1 .52-.53l6.25-2.67c.83-.36.79-1.56-.07-1.87L6.36 4.09a1 1 0 0 0-1.27 1.27Z';
+  const CUSTOM_CURSOR_FILTER = `
+    <defs>
+      <filter id="site-cursor-shadow" x="0" y="0" width="28" height="28"
+        filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+        <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+        <feColorMatrix in="SourceAlpha" type="matrix"
+          values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0"
+          result="hardAlpha"/>
+        <feOffset dy="1"/>
+        <feGaussianBlur stdDeviation="2"/>
+        <feComposite in2="hardAlpha" operator="out"/>
+        <feColorMatrix type="matrix"
+          values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"/>
+        <feBlend mode="normal" in2="BackgroundImageFix" result="cursorShadow"/>
+        <feBlend mode="normal" in="SourceGraphic" in2="cursorShadow" result="shape"/>
+      </filter>
+    </defs>`;
+  const CUSTOM_CURSOR_SVG_SOURCE = `
+    <svg width="24" height="24" viewBox="0 0 28 28" fill="none"
+      xmlns="http://www.w3.org/2000/svg">
+      <g filter="url(#site-cursor-shadow)">
+        <path d="${CUSTOM_CURSOR_PATH}" fill="#111114" stroke="#fff"
+          stroke-width="2" stroke-linejoin="round"/>
+      </g>
+      ${CUSTOM_CURSOR_FILTER}
+    </svg>`;
+  const CUSTOM_CURSOR_CSS_VALUE =
+    `url("data:image/svg+xml,${encodeURIComponent(CUSTOM_CURSOR_SVG_SOURCE)}") 4 3, default`;
+  const CUSTOM_CURSOR_DOCUMENT_CSS =
+    `html[${CUSTOM_CURSOR_ACTIVE_ATTR}],` +
+    `html[${CUSTOM_CURSOR_ACTIVE_ATTR}] *,` +
+    `html[${CUSTOM_CURSOR_ACTIVE_ATTR}] *::before,` +
+    `html[${CUSTOM_CURSOR_ACTIVE_ATTR}] *::after{cursor:${CUSTOM_CURSOR_CSS_VALUE}!important}` +
+    `html[${CUSTOM_CURSOR_ACTIVE_ATTR}][${CUSTOM_CURSOR_DOM_ATTR}],` +
+    `html[${CUSTOM_CURSOR_ACTIVE_ATTR}][${CUSTOM_CURSOR_DOM_ATTR}] *,` +
+    `html[${CUSTOM_CURSOR_ACTIVE_ATTR}][${CUSTOM_CURSOR_DOM_ATTR}] *::before,` +
+    `html[${CUSTOM_CURSOR_ACTIVE_ATTR}][${CUSTOM_CURSOR_DOM_ATTR}] *::after{cursor:none!important}`;
+  const CUSTOM_CURSOR_SHADOW_CSS =
+    `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}]),` +
+    `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}]) *,` +
+    `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}]) *::before,` +
+    `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}]) *::after{cursor:${CUSTOM_CURSOR_CSS_VALUE}!important}` +
+    `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}][${CUSTOM_CURSOR_DOM_ATTR}]),` +
+    `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}][${CUSTOM_CURSOR_DOM_ATTR}]) *,` +
+    `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}][${CUSTOM_CURSOR_DOM_ATTR}]) *::before,` +
+    `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}][${CUSTOM_CURSOR_DOM_ATTR}]) *::after{cursor:none!important}`;
+  const CUSTOM_CURSOR_SVG = `
+    <svg width="24" height="24" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+      <g filter="url(#site-cursor-shadow)">
+        <path d="${CUSTOM_CURSOR_PATH}" fill="currentColor" stroke="#fff"
+          stroke-width="2" stroke-linejoin="round"/>
+      </g>
+      ${CUSTOM_CURSOR_FILTER}
+    </svg>`;
+
+  let cursorPoint = { x: innerWidth / 2, y: innerHeight / 2 };
+  let cursorPointValid = false;
+  let cursorChatEl = null;
+  let cursorChatBubble = null;
+  let cursorChatInput = null;
+  let cursorChatMirror = null;
+  let cursorFollowerRenderedX = Number.NaN;
+  let cursorFollowerRenderedY = Number.NaN;
+  let cursorChatOffsetX = Number.NaN;
+  let cursorChatOffsetY = Number.NaN;
+  let cursorChatWidth = 124;
+  let cursorChatHeight = 35;
+  let cursorChatViewportWidth = innerWidth;
+  let cursorChatViewportHeight = innerHeight;
+  let cursorChatDockTop = innerHeight;
+  let cursorChatResizeObserver = null;
+  let cursorChatLayoutFrame = null;
+  let cursorChatLayoutNeedsMeasure = false;
+  const customCursorPolicies = new Map();
+  let cursorChatOpen = false;
+  let cursorChatFading = false;
+  let cursorChatComposing = false;
+  let cursorChatHandoffPending = false;
+  let cursorChatSession = null;
+  let cursorChatSequence = 0;
+  let cursorChatLastSentAt = -Infinity;
+  let cursorChatLastSentText = null;
+  let cursorChatPendingText = null;
+  let cursorChatSyncTimer = null;
+  let cursorChatIdleTimer = null;
+  let cursorChatFadeTimer = null;
+  let cursorChatSideX = 'right';
+  let cursorChatSideY = 'bottom';
+
+  const clamp = (value, min, max) => Math.min(Math.max(value, min), Math.max(min, max));
+
+  function createCursorChatSession() {
+    try {
+      if (crypto.randomUUID) return `cc_${crypto.randomUUID()}`;
+      const words = new Uint32Array(3);
+      crypto.getRandomValues(words);
+      return `cc_${[...words].map((word) => word.toString(36)).join('_')}`;
+    } catch {
+      return `cc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+    }
+  }
+
+  function cleanCursorChatValue(value) {
+    const withoutControls = String(value || '').replace(CURSOR_CHAT_CONTROL_RE, '');
+    return Array.from(withoutControls).slice(0, CURSOR_CHAT_MAX_POINTS).join('');
+  }
+
+  function wireCursorChatValue(value) {
+    const clean = cleanCursorChatValue(value);
+    return /\S/u.test(clean) ? clean : '';
+  }
+
+  function normalizeCursorChatInput() {
+    if (!cursorChatInput) return '';
+    const raw = cursorChatInput.value;
+    const clean = cleanCursorChatValue(raw);
+    if (raw === clean) return clean;
+
+    const start = cursorChatInput.selectionStart ?? raw.length;
+    const end = cursorChatInput.selectionEnd ?? start;
+    const cleanStart = cleanCursorChatValue(raw.slice(0, start)).length;
+    const cleanEnd = cleanCursorChatValue(raw.slice(0, end)).length;
+    cursorChatInput.value = clean;
+    cursorChatInput.setSelectionRange(
+      Math.min(cleanStart, clean.length),
+      Math.min(cleanEnd, clean.length)
+    );
+    return clean;
+  }
+
+  function ensureCustomCursorDocumentStyle(policy) {
+    const frameDocument = policy.document;
+    let style = frameDocument.querySelector(`style[${CUSTOM_CURSOR_STYLE_ATTR}]`);
+    if (!style) {
+      style = frameDocument.createElement('style');
+      style.setAttribute(CUSTOM_CURSOR_STYLE_ATTR, '');
+      (frameDocument.head || frameDocument.documentElement).appendChild(style);
+    }
+    if (style.textContent !== CUSTOM_CURSOR_DOCUMENT_CSS) {
+      style.textContent = CUSTOM_CURSOR_DOCUMENT_CSS;
+    }
+    policy.documentStyle = style;
+  }
+
+  function ensureCustomCursorShadowStyle(policy, shadowRoot) {
+    let style = shadowRoot.querySelector(
+      `style[${CUSTOM_CURSOR_SHADOW_STYLE_ATTR}]`
+    );
+    if (!style) {
+      style = policy.document.createElement('style');
+      style.setAttribute(CUSTOM_CURSOR_SHADOW_STYLE_ATTR, '');
+      shadowRoot.appendChild(style);
+    }
+    if (style.textContent !== CUSTOM_CURSOR_SHADOW_CSS) {
+      style.textContent = CUSTOM_CURSOR_SHADOW_CSS;
+    }
+  }
+
+  function disposeCustomCursorShadowRoot(policy, shadowRoot, observer) {
+    observer?.disconnect();
+    shadowRoot.host?.removeAttribute(CUSTOM_CURSOR_ACTIVE_ATTR);
+    shadowRoot.host?.removeAttribute(CUSTOM_CURSOR_DOM_ATTR);
+    for (const style of shadowRoot.querySelectorAll(
+      `style[${CUSTOM_CURSOR_SHADOW_STYLE_ATTR}]`
+    )) {
+      style.remove();
+    }
+    policy.shadowObservers.delete(shadowRoot);
+  }
+
+  function pruneCustomCursorShadowRoots(policy) {
+    for (const [shadowRoot, observer] of policy.shadowObservers) {
+      const host = shadowRoot.host;
+      if (host?.isConnected && host.ownerDocument === policy.document) continue;
+      disposeCustomCursorShadowRoot(policy, shadowRoot, observer);
+    }
+  }
+
+  function scanCustomCursorNode(policy, node) {
+    if (policy.disposed || !node) return;
+    if (node.nodeType === 1 && node.shadowRoot?.mode === 'open') {
+      registerCustomCursorShadowRoot(policy, node.shadowRoot);
+    }
+    if (typeof node.querySelectorAll !== 'function') return;
+    for (const element of node.querySelectorAll('*')) {
+      if (element.shadowRoot?.mode === 'open') {
+        registerCustomCursorShadowRoot(policy, element.shadowRoot);
+      }
+    }
+  }
+
+  function registerCustomCursorShadowRoot(policy, shadowRoot) {
+    const host = shadowRoot?.host;
+    if (
+      policy.disposed ||
+      shadowRoot?.mode !== 'open' ||
+      host?.ownerDocument !== policy.document
+    ) {
+      return;
+    }
+
+    host.toggleAttribute(CUSTOM_CURSOR_ACTIVE_ATTR, policy.active);
+    host.toggleAttribute(CUSTOM_CURSOR_DOM_ATTR, policy.domFollower);
+    ensureCustomCursorShadowStyle(policy, shadowRoot);
+    if (policy.shadowObservers.has(shadowRoot)) return;
+
+    let observer = null;
+    const FrameMutationObserver = policy.document.defaultView?.MutationObserver;
+    if (typeof FrameMutationObserver === 'function') {
+      observer = new FrameMutationObserver((entries) => {
+        if (policy.disposed) return;
+        ensureCustomCursorShadowStyle(policy, shadowRoot);
+        for (const entry of entries) {
+          for (const addedNode of entry.addedNodes) {
+            scanCustomCursorNode(policy, addedNode);
+          }
+        }
+        pruneCustomCursorShadowRoots(policy);
+      });
+      observer.observe(shadowRoot, { childList: true, subtree: true });
+    }
+    policy.shadowObservers.set(shadowRoot, observer);
+    scanCustomCursorNode(policy, shadowRoot);
+  }
+
+  function patchCustomCursorShadowCreation(policy) {
+    const prototype = policy.document.defaultView?.Element?.prototype;
+    const descriptor = prototype
+      ? Object.getOwnPropertyDescriptor(prototype, 'attachShadow')
+      : null;
+    if (!prototype || typeof descriptor?.value !== 'function') return;
+
+    const original = descriptor.value;
+    const patched = function attachShadow(init) {
+      const shadowRoot = Reflect.apply(original, this, [init]);
+      if (
+        shadowRoot?.mode === 'open' &&
+        this.ownerDocument === policy.document &&
+        this.isConnected &&
+        !policy.disposed
+      ) {
+        try {
+          registerCustomCursorShadowRoot(policy, shadowRoot);
+        } catch {
+          /* cursor policy must never prevent a component from mounting */
+        }
+      }
+      return shadowRoot;
+    };
+
+    try {
+      Object.defineProperty(prototype, 'attachShadow', {
+        ...descriptor,
+        value: patched,
+      });
+      if (prototype.attachShadow === patched) {
+        policy.attachShadowPatch = { prototype, descriptor, patched };
+      }
+    } catch {
+      /* document observation still covers connected open shadow roots */
+    }
+  }
+
+  function installCustomCursorPolicy(frameDocument) {
+    let policy = customCursorPolicies.get(frameDocument);
+    if (policy) {
+      ensureCustomCursorDocumentStyle(policy);
+      scanCustomCursorNode(policy, frameDocument.documentElement);
+      pruneCustomCursorShadowRoots(policy);
+      return policy;
+    }
+
+    policy = {
+      document: frameDocument,
+      documentStyle: null,
+      documentObserver: null,
+      shadowObservers: new Map(),
+      attachShadowPatch: null,
+      active: false,
+      domFollower: false,
+      disposed: false,
+    };
+    customCursorPolicies.set(frameDocument, policy);
+    ensureCustomCursorDocumentStyle(policy);
+    patchCustomCursorShadowCreation(policy);
+    scanCustomCursorNode(policy, frameDocument.documentElement);
+
+    const FrameMutationObserver = frameDocument.defaultView?.MutationObserver;
+    if (typeof FrameMutationObserver === 'function') {
+      policy.documentObserver = new FrameMutationObserver((entries) => {
+        if (policy.disposed) return;
+        ensureCustomCursorDocumentStyle(policy);
+        for (const entry of entries) {
+          for (const addedNode of entry.addedNodes) {
+            scanCustomCursorNode(policy, addedNode);
+          }
+        }
+        pruneCustomCursorShadowRoots(policy);
+      });
+      policy.documentObserver.observe(frameDocument.documentElement, {
+        childList: true,
+        subtree: true,
+      });
+    }
+    return policy;
+  }
+
+  function setCustomCursorPolicyMode(policy, active, domFollower) {
+    policy.active = active;
+    policy.domFollower = active && domFollower;
+    policy.document.documentElement?.toggleAttribute(
+      CUSTOM_CURSOR_ACTIVE_ATTR,
+      active
+    );
+    policy.document.documentElement?.toggleAttribute(
+      CUSTOM_CURSOR_DOM_ATTR,
+      policy.domFollower
+    );
+    for (const shadowRoot of policy.shadowObservers.keys()) {
+      shadowRoot.host?.toggleAttribute(CUSTOM_CURSOR_ACTIVE_ATTR, active);
+      shadowRoot.host?.toggleAttribute(CUSTOM_CURSOR_DOM_ATTR, policy.domFollower);
+    }
+  }
+
+  function customCursorPolicyIsConnected(policy) {
+    try {
+      const frame = policy.document.defaultView?.frameElement;
+      return Boolean(
+        frame?.isConnected && frame.contentDocument === policy.document
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function disposeCustomCursorPolicy(policy) {
+    policy.disposed = true;
+    policy.documentObserver?.disconnect();
+    policy.document.documentElement?.removeAttribute(CUSTOM_CURSOR_ACTIVE_ATTR);
+    policy.document.documentElement?.removeAttribute(CUSTOM_CURSOR_DOM_ATTR);
+    for (const [shadowRoot, observer] of [...policy.shadowObservers]) {
+      disposeCustomCursorShadowRoot(policy, shadowRoot, observer);
+    }
+    for (const style of policy.document.querySelectorAll(
+      `style[${CUSTOM_CURSOR_STYLE_ATTR}]`
+    )) {
+      style.remove();
+    }
+
+    const patch = policy.attachShadowPatch;
+    if (patch?.prototype.attachShadow === patch.patched) {
+      try {
+        Object.defineProperty(patch.prototype, 'attachShadow', patch.descriptor);
+      } catch {
+        /* a discarded document no longer needs restoration to stay usable */
+      }
+    }
+    customCursorPolicies.delete(policy.document);
+  }
+
+  function releaseCustomCursorFrame(frame) {
+    try {
+      const frameDocument = frame?.contentDocument;
+      const policy = frameDocument && customCursorPolicies.get(frameDocument);
+      if (policy) disposeCustomCursorPolicy(policy);
+    } catch {
+      /* a detached or cross-origin frame has no local policy to release */
+    }
+  }
+
+  function syncCustomCursor() {
+    const policyActive = finePointer.matches;
+    const domFollower =
+      policyActive &&
+      cursorPointValid &&
+      (cursorChatOpen || cursorChatHandoffPending);
+    if (cursorChatEl) cursorChatEl.hidden = !domFollower;
+    document.documentElement.style.setProperty(
+      '--site-custom-cursor',
+      CUSTOM_CURSOR_CSS_VALUE
+    );
+    document.documentElement.classList.toggle('has-custom-cursor', policyActive);
+    document.documentElement.classList.toggle('has-dom-cursor', domFollower);
+
+    for (const policy of [...customCursorPolicies.values()]) {
+      if (!customCursorPolicyIsConnected(policy)) {
+        disposeCustomCursorPolicy(policy);
+      } else {
+        setCustomCursorPolicyMode(policy, policyActive, domFollower);
+      }
+    }
+
+    for (const frame of document.querySelectorAll('iframe')) {
+      try {
+        const frameDocument = frame.contentDocument;
+        if (!frameDocument?.documentElement) continue;
+        const policy = installCustomCursorPolicy(frameDocument);
+        setCustomCursorPolicyMode(policy, policyActive, domFollower);
+      } catch {
+        /* cross-origin frames keep their own cursor policy */
+      }
+    }
+  }
+
+  function ensureCursorChat() {
+    if (cursorChatEl) return;
+    cursorChatEl = document.createElement('div');
+    cursorChatEl.id = 'cursor-chat-composer';
+    cursorChatEl.className = 'cursor-chat-local';
+    cursorChatEl.hidden = true;
+    cursorChatEl.innerHTML =
+      `<div class="site-cursor" aria-hidden="true">${CUSTOM_CURSOR_SVG}</div>
+      <div class="cursor-chat-bubble cursor-chat-local-bubble">
+        <input class="cursor-chat-input" type="text" placeholder="Say something"
+          aria-label="Cursor chat message" autocomplete="off" spellcheck="true" />
+        <span class="cursor-chat-mirror" aria-hidden="true"></span>
+      </div>`;
+    cursorChatBubble = cursorChatEl.querySelector('.cursor-chat-bubble');
+    cursorChatInput = cursorChatEl.querySelector('.cursor-chat-input');
+    cursorChatMirror = cursorChatEl.querySelector('.cursor-chat-mirror');
+    document.body.appendChild(cursorChatEl);
+
+    if (typeof ResizeObserver === 'function') {
+      cursorChatResizeObserver = new ResizeObserver((entries) => {
+        let shouldPosition = false;
+        for (const entry of entries) {
+          if (entry.target === barEl) {
+            refreshCursorChatLayout();
+            shouldPosition = true;
+            continue;
+          }
+          if (entry.target !== cursorChatBubble || entry.target.hidden) continue;
+          const borderBox = Array.isArray(entry.borderBoxSize)
+            ? entry.borderBoxSize[0]
+            : entry.borderBoxSize;
+          const borderWidth = Number(borderBox?.inlineSize);
+          const borderHeight = Number(borderBox?.blockSize);
+          const contentWidth = Number(entry.contentRect?.width);
+          const contentHeight = Number(entry.contentRect?.height);
+          const width = borderWidth > 0 ? borderWidth : contentWidth + 28;
+          const height = borderHeight > 0 ? borderHeight : contentHeight + 16;
+          if (!(width > 0 && height > 0)) continue;
+          cursorChatWidth = width;
+          cursorChatHeight = height;
+          shouldPosition = true;
+        }
+        if (shouldPosition) positionCursorChat();
+      });
+      cursorChatResizeObserver.observe(cursorChatBubble);
+      if (barEl) cursorChatResizeObserver.observe(barEl);
+    }
+
+    cursorChatInput.addEventListener('compositionstart', () => {
+      if (!cursorChatOpen) return;
+      reviveCursorChat();
+      cursorChatComposing = true;
+      clearTimeout(cursorChatIdleTimer);
+      cursorChatIdleTimer = null;
+    });
+    cursorChatInput.addEventListener('compositionend', () => {
+      if (!cursorChatOpen) return;
+      cursorChatComposing = false;
+      reviveCursorChat();
+      const value = normalizeCursorChatInput();
+      measureCursorChat();
+      positionCursorChat(true);
+      queueCursorChatSync(value, true);
+      scheduleCursorChatExpiry();
+    });
+    cursorChatInput.addEventListener('input', (event) => {
+      if (!cursorChatOpen) return;
+      reviveCursorChat();
+      if (cursorChatComposing || event.isComposing) {
+        // The browser owns the provisional IME value and candidate window.
+        // Render it locally, but do not leak or normalize it until commit.
+        measureCursorChat();
+        positionCursorChat(false);
+        return;
+      }
+      const value = normalizeCursorChatInput();
+      measureCursorChat();
+      positionCursorChat(true);
+      queueCursorChatSync(value);
+      scheduleCursorChatExpiry();
+    });
+    cursorChatInput.addEventListener('keydown', (event) => {
+      // Enter/Escape belong to the IME while a candidate is active. keyCode
+      // 229 covers Safari's compositionend-before-keydown ordering.
+      if (cursorChatComposing || event.isComposing || event.keyCode === 229) return;
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        event.stopPropagation();
+        reviveCursorChat();
+        cursorChatInput.value = '';
+        measureCursorChat();
+        positionCursorChat(true);
+        queueCursorChatSync('', true);
+        scheduleCursorChatExpiry();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        closeCursorChat();
+      }
+    });
+  }
+
+  function measureCursorChat() {
+    if (!cursorChatEl || cursorChatEl.hidden) return;
+    const sample = cursorChatInput.value || cursorChatInput.placeholder;
+    cursorChatMirror.textContent = `${sample}\u200b`;
+    const textWidth = Math.ceil(cursorChatMirror.getBoundingClientRect().width);
+    const maxInputWidth = Math.max(
+      CURSOR_CHAT_MIN_INPUT_PX,
+      Math.min(300, cursorChatViewportWidth - CURSOR_CHAT_EDGE * 2 - 28)
+    );
+    const minInputWidth = Math.min(CURSOR_CHAT_MIN_INPUT_PX, maxInputWidth);
+    cursorChatInput.style.setProperty(
+      '--cursor-chat-input-width',
+      `${clamp(textWidth + 2, minInputWidth, maxInputWidth)}px`
+    );
+    cursorChatWidth =
+      clamp(textWidth + 2, minInputWidth, maxInputWidth) + 28;
+    cursorChatHeight = 35;
+  }
+
+  function refreshCursorChatLayout() {
+    const viewport = window.visualViewport;
+    cursorChatViewportWidth = viewport?.width || innerWidth;
+    cursorChatViewportHeight = viewport?.height || innerHeight;
+    const dockRect = barEl && !barEl.hidden ? barEl.getBoundingClientRect() : null;
+    cursorChatDockTop = dockRect?.top ?? cursorChatViewportHeight;
+  }
+
+  function scheduleCursorChatLayoutRefresh(measure = false) {
+    cursorChatLayoutNeedsMeasure ||= measure;
+    if (cursorChatLayoutFrame !== null) return;
+    cursorChatLayoutFrame = requestAnimationFrame(() => {
+      cursorChatLayoutFrame = null;
+      const shouldMeasure = cursorChatLayoutNeedsMeasure;
+      cursorChatLayoutNeedsMeasure = false;
+      refreshCursorChatLayout();
+      if (shouldMeasure) measureCursorChat();
+      positionCursorChat();
+    });
+  }
+
+  function positionCursorChat(allowFlip = !cursorChatComposing) {
+    if (!cursorChatOpen || !cursorChatEl || cursorChatEl.hidden) return;
+    const width = cursorChatWidth;
+    const height = cursorChatHeight;
+    const bottomEdge = Math.max(
+      CURSOR_CHAT_EDGE + height,
+      Math.min(
+        cursorChatViewportHeight - CURSOR_CHAT_EDGE,
+        cursorChatDockTop - CURSOR_CHAT_EDGE
+      )
+    );
+
+    if (allowFlip) {
+      const rightX = cursorPoint.x + CURSOR_CHAT_GAP_X;
+      const leftX = cursorPoint.x - CURSOR_CHAT_GAP_X - width;
+      const rightFits =
+        rightX + width <= cursorChatViewportWidth - CURSOR_CHAT_EDGE;
+      const leftFits = leftX >= CURSOR_CHAT_EDGE;
+      const rightOverflow =
+        rightX + width - (cursorChatViewportWidth - CURSOR_CHAT_EDGE);
+      const leftOverflow = CURSOR_CHAT_EDGE - leftX;
+
+      // Preserve the current side through the boundary zone. A side change
+      // only happens once the current placement is meaningfully clipped and
+      // the opposite side can fit, preventing 1px pointer jitter from making
+      // the input bounce back and forth.
+      if (
+        cursorChatSideX === 'right' &&
+        rightOverflow >= CURSOR_CHAT_FLIP_HYSTERESIS &&
+        leftFits
+      ) {
+        cursorChatSideX = 'left';
+      } else if (
+        cursorChatSideX === 'left' &&
+        leftOverflow >= CURSOR_CHAT_FLIP_HYSTERESIS &&
+        rightFits
+      ) {
+        cursorChatSideX = 'right';
+      }
+
+      const bottomY = cursorPoint.y + CURSOR_CHAT_GAP_Y;
+      const topY = cursorPoint.y - CURSOR_CHAT_GAP_Y - height;
+      const bottomFits = bottomY + height <= bottomEdge;
+      const topFits = topY >= CURSOR_CHAT_EDGE;
+      const bottomOverflow = bottomY + height - bottomEdge;
+      const topOverflow = CURSOR_CHAT_EDGE - topY;
+      if (
+        cursorChatSideY === 'bottom' &&
+        bottomOverflow >= CURSOR_CHAT_FLIP_HYSTERESIS &&
+        topFits
+      ) {
+        cursorChatSideY = 'top';
+      } else if (
+        cursorChatSideY === 'top' &&
+        topOverflow >= CURSOR_CHAT_FLIP_HYSTERESIS &&
+        bottomFits
+      ) {
+        cursorChatSideY = 'bottom';
+      }
+    }
+
+    const idealX =
+      cursorChatSideX === 'right'
+        ? cursorPoint.x + CURSOR_CHAT_GAP_X
+        : cursorPoint.x - CURSOR_CHAT_GAP_X - width;
+    const idealY =
+      cursorChatSideY === 'bottom'
+        ? cursorPoint.y + CURSOR_CHAT_GAP_Y
+        : cursorPoint.y - CURSOR_CHAT_GAP_Y - height;
+    const x = clamp(
+      idealX,
+      CURSOR_CHAT_EDGE,
+      cursorChatViewportWidth - width - CURSOR_CHAT_EDGE
+    );
+    const y = clamp(idealY, CURSOR_CHAT_EDGE, bottomEdge - height);
+
+    // The outer follower owns the pointer position. The bubble only carries a
+    // relative offset, so moving in the open viewport needs no layout read.
+    const offsetX = Math.round(x - cursorPoint.x);
+    const offsetY = Math.round(y - cursorPoint.y);
+    if (offsetX === cursorChatOffsetX && offsetY === cursorChatOffsetY) return;
+    cursorChatOffsetX = offsetX;
+    cursorChatOffsetY = offsetY;
+    cursorChatBubble.style.transform = `translate3d(${offsetX}px, ${offsetY}px, 0)`;
+  }
+
+  function positionCursorFollower() {
+    if (
+      !cursorPointValid ||
+      !cursorChatEl ||
+      cursorChatEl.hidden ||
+      !(cursorChatOpen || cursorChatHandoffPending)
+    ) {
+      return;
+    }
+    const x = Math.round(cursorPoint.x);
+    const y = Math.round(cursorPoint.y);
+    if (x === cursorFollowerRenderedX && y === cursorFollowerRenderedY) return;
+    cursorFollowerRenderedX = x;
+    cursorFollowerRenderedY = y;
+    cursorChatEl.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+  }
+
+  function completeCursorChatHandoff() {
+    if (!cursorChatHandoffPending) return;
+    cursorChatHandoffPending = false;
+    if (cursorChatEl) cursorChatEl.hidden = true;
+    syncCustomCursor();
+  }
+
+  function trackPointer(x, y) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    cursorPoint.x = x;
+    cursorPoint.y = y;
+    cursorPointValid = true;
+
+    // Recent-style split: normal browsing uses the browser's custom SVG
+    // cursor plane. Only Cursor Chat mounts a DOM follower, and that follower
+    // is updated in the pointer callback so it never trails by one RAF.
+    if (cursorChatOpen || cursorChatHandoffPending) {
+      positionCursorFollower();
+      if (cursorChatOpen) positionCursorChat();
+    }
+    // After the fade, keep the DOM arrow at the last point until movement.
+    // This event has already aligned it with the platform cursor, so the swap
+    // back to the CSS SVG is visually continuous.
+    if (cursorChatHandoffPending) completeCursorChatHandoff();
+  }
+
+  function cancelCursorChatSync() {
+    clearTimeout(cursorChatSyncTimer);
+    cursorChatSyncTimer = null;
+    cursorChatPendingText = null;
+  }
+
+  function sendCursorChatNow(value, allowDuplicate = false) {
+    if (!cursorChatSession) return;
+    const text = wireCursorChatValue(value);
+    if (!allowDuplicate && text === cursorChatLastSentText) return;
+    cursorChatLastSentAt = performance.now();
+    cursorChatLastSentText = text;
+    presence?.cursorChat?.({
+      session: cursorChatSession,
+      seq: ++cursorChatSequence,
+      text,
+      x: cursorPoint.x,
+      y: cursorPoint.y,
+      ttlMs: CURSOR_CHAT_TTL_MS,
+    });
+  }
+
+  function flushCursorChatSync() {
+    cursorChatSyncTimer = null;
+    if (!cursorChatOpen || cursorChatPendingText === null) return;
+    const value = cursorChatPendingText;
+    cursorChatPendingText = null;
+    sendCursorChatNow(value);
+  }
+
+  function queueCursorChatSync(value, immediate = false) {
+    if (!cursorChatOpen) return;
+    const text = wireCursorChatValue(value);
+    if (immediate) {
+      cancelCursorChatSync();
+      sendCursorChatNow(text);
+      return;
+    }
+
+    const elapsed = performance.now() - cursorChatLastSentAt;
+    if (elapsed >= CURSOR_CHAT_SYNC_MS) {
+      cancelCursorChatSync();
+      sendCursorChatNow(text);
+      return;
+    }
+
+    cursorChatPendingText = text;
+    if (cursorChatSyncTimer === null) {
+      cursorChatSyncTimer = setTimeout(
+        flushCursorChatSync,
+        Math.max(0, CURSOR_CHAT_SYNC_MS - elapsed)
+      );
+    }
+  }
+
+  function scheduleCursorChatExpiry() {
+    clearTimeout(cursorChatIdleTimer);
+    cursorChatIdleTimer = setTimeout(() => {
+      cursorChatIdleTimer = null;
+      if (!cursorChatComposing) beginCursorChatFade();
+    }, CURSOR_CHAT_TTL_MS);
+  }
+
+  function reviveCursorChat() {
+    if (!cursorChatFading) return;
+    clearTimeout(cursorChatFadeTimer);
+    cursorChatFadeTimer = null;
+    cursorChatFading = false;
+    cursorChatBubble.classList.remove('is-out');
+  }
+
+  function finishCursorChat(waitForPointerHandoff = false) {
+    clearTimeout(cursorChatIdleTimer);
+    clearTimeout(cursorChatFadeTimer);
+    cancelCursorChatSync();
+    cursorChatIdleTimer = null;
+    cursorChatFadeTimer = null;
+    cursorChatOpen = false;
+    cursorChatFading = false;
+    cursorChatComposing = false;
+    cursorChatBubble?.classList.remove('is-out');
+    if (cursorChatBubble) cursorChatBubble.hidden = true;
+    if (document.activeElement === cursorChatInput) cursorChatInput.blur();
+    if (cursorChatInput) cursorChatInput.value = '';
+    cursorChatSession = null;
+    cursorChatLastSentText = null;
+    cursorChatHandoffPending =
+      waitForPointerHandoff && finePointer.matches && cursorPointValid;
+    chatHint?.setAttribute('aria-expanded', 'false');
+    if (chatHint) {
+      chatHint.title = 'Open cursor chat';
+      chatHint.setAttribute('aria-label', 'Open cursor chat');
+    }
+    syncCustomCursor();
+  }
+
+  function beginCursorChatFade() {
+    if (!cursorChatOpen || cursorChatFading) return;
+    clearTimeout(cursorChatIdleTimer);
+    cursorChatIdleTimer = null;
+    cancelCursorChatSync();
+    sendCursorChatNow('', true);
+    cursorChatFading = true;
+    cursorChatBubble.classList.add('is-out');
+    const session = cursorChatSession;
+    cursorChatFadeTimer = setTimeout(() => {
+      if (cursorChatSession === session && cursorChatFading) {
+        finishCursorChat(true);
+      }
+    }, CURSOR_CHAT_FADE_MS);
+  }
+
+  function closeCursorChat() {
+    closeCursorChatImmediately();
+  }
+
+  function closeCursorChatImmediately() {
+    if (!cursorChatOpen && !cursorChatHandoffPending) return;
+    if (cursorChatOpen) {
+      cancelCursorChatSync();
+      sendCursorChatNow('', true);
+    }
+    finishCursorChat(false);
+  }
+
+  function openCursorChat(point) {
+    if (!finePointer.matches) return false;
+    if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) {
+      trackPointer(point.x, point.y);
+    } else if (!cursorPointValid) {
+      // A keyboard-only invocation has no pointer event to anchor to, so use
+      // a deterministic center point until the next real movement arrives.
+      cursorPoint.x = innerWidth / 2;
+      cursorPoint.y = innerHeight / 2;
+      cursorPointValid = true;
+    }
+    if (cursorChatOpen) closeCursorChatImmediately();
+    ensureCursorChat();
+
+    cursorChatHandoffPending = false;
+    cursorChatSession = createCursorChatSession();
+    cursorChatLastSentAt = -Infinity;
+    cursorChatLastSentText = null;
+    cursorChatSideX = 'right';
+    cursorChatSideY = 'bottom';
+    cursorFollowerRenderedX = Number.NaN;
+    cursorFollowerRenderedY = Number.NaN;
+    cursorChatOffsetX = Number.NaN;
+    cursorChatOffsetY = Number.NaN;
+    cursorChatOpen = true;
+    cursorChatFading = false;
+    cursorChatComposing = false;
+    cursorChatInput.value = '';
+    cursorChatBubble.hidden = false;
+    cursorChatBubble.classList.remove('is-out');
+    refreshCursorChatLayout();
+    syncCustomCursor();
+    measureCursorChat();
+    positionCursorFollower();
+    positionCursorChat();
+    cursorChatInput.focus({ preventScroll: true });
+    chatHint?.setAttribute('aria-expanded', 'true');
+    if (chatHint) {
+      chatHint.title = 'Restart cursor chat';
+      chatHint.setAttribute('aria-label', 'Restart cursor chat');
+    }
+    return true;
+  }
+
+  function isCursorChatOpen() {
+    return cursorChatOpen;
+  }
+
+  function eventTargetsEditable(event) {
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : [event.target];
+    return path.some((node) => {
+      if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
+      return (
+        node.tagName === 'INPUT' ||
+        node.tagName === 'TEXTAREA' ||
+        node.tagName === 'SELECT' ||
+        node.isContentEditable
+      );
+    });
+  }
+
+  addEventListener(
+    'pointermove',
+    (event) => {
+      if (event.pointerType && event.pointerType !== 'mouse' && event.pointerType !== 'pen') return;
+      trackPointer(event.clientX, event.clientY);
+    },
+    { passive: true }
+  );
+  document.documentElement.addEventListener(
+    'pointerenter',
+    (event) => {
+      if (event.pointerType && event.pointerType !== 'mouse' && event.pointerType !== 'pen') {
+        return;
+      }
+      trackPointer(event.clientX, event.clientY);
+    },
+    { passive: true }
+  );
+  document.documentElement.addEventListener(
+    'pointerleave',
+    (event) => {
+      if (event.pointerType && event.pointerType !== 'mouse' && event.pointerType !== 'pen') {
+        return;
+      }
+      if (event.relatedTarget !== null) return;
+      cursorPointValid = false;
+      closeCursorChatImmediately();
+      syncCustomCursor();
+    },
+    { passive: true }
+  );
+  document.addEventListener(
+    'pointerdown',
+    (event) => {
+      trackPointer(event.clientX, event.clientY);
+      if (cursorChatOpen) closeCursorChat();
+    },
+    { capture: true, passive: true }
+  );
+  addEventListener('keydown', (event) => {
+    if (
+      event.key === 'Escape' &&
+      cursorChatOpen &&
+      !event.defaultPrevented &&
+      !cursorChatComposing &&
+      !event.isComposing &&
+      event.keyCode !== 229
+    ) {
+      event.preventDefault();
+      closeCursorChatImmediately();
+      return;
+    }
+    if (
+      event.key !== '/' ||
+      event.defaultPrevented ||
+      event.repeat ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.altKey ||
+      event.isComposing ||
+      event.keyCode === 229 ||
+      eventTargetsEditable(event)
+    ) {
+      return;
+    }
+    if (!finePointer.matches) return;
+    event.preventDefault();
+    openCursorChat();
+  });
+  addEventListener(
+    'resize',
+    () => scheduleCursorChatLayoutRefresh(true),
+    { passive: true }
+  );
+  window.visualViewport?.addEventListener(
+    'resize',
+    () => scheduleCursorChatLayoutRefresh(true),
+    { passive: true }
+  );
+  window.visualViewport?.addEventListener(
+    'scroll',
+    () => scheduleCursorChatLayoutRefresh(),
+    { passive: true }
+  );
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      cursorPointValid = false;
+      closeCursorChatImmediately();
+      syncCustomCursor();
+    }
+  });
+  addEventListener('blur', () => {
+    cursorPointValid = false;
+    closeCursorChatImmediately();
+    syncCustomCursor();
+  });
+  finePointer.addEventListener('change', (event) => {
+    if (!event.matches) {
+      cursorPointValid = false;
+      closeCursorChatImmediately();
+    }
+    syncCustomCursor();
+  });
+
+  // Keep the controlled input stable across every open/close cycle and make
+  // the topbar's aria-controls target available before first interaction.
+  ensureCursorChat();
+  refreshCursorChatLayout();
+  syncCustomCursor();
+
   // Topbar hint chip: another way in, for people who never guess "/".
-  chatHint?.addEventListener('click', () => toggleBar());
-  openBar(true, false);
+  chatHint?.addEventListener('click', (event) => {
+    openCursorChat({ x: event.clientX, y: event.clientY });
+  });
+
+  // Bullet chat is persistent chrome after boot, but it must not peek around
+  // the loader while that surface scales down. The boot completion event
+  // releases one short, GPU-only entrance from below; a deliberate boot skip
+  // keeps the dock instant.
+  let socialChromeReady = false;
+  let socialChromeBootObserver = null;
+  const revealSocialChrome = (instant = false) => {
+    if (socialChromeReady) return;
+    socialChromeReady = true;
+    socialChromeBootObserver?.disconnect();
+    socialChromeBootObserver = null;
+    openBar(instant, false);
+  };
+
+  if (bootInProgress()) {
+    ensureBar();
+    addEventListener('boot:done', () => revealSocialChrome(false), {
+      once: true,
+    });
+    // The head-level dead-man's switch normally emits boot:done too. Watching
+    // the root class keeps this component fail-open even if an older cached
+    // document or a partially loaded boot script only clears the state.
+    socialChromeBootObserver = new MutationObserver(() => {
+      if (!bootInProgress()) revealSocialChrome(false);
+    });
+    socialChromeBootObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class'],
+    });
+  } else {
+    revealSocialChrome(true);
+  }
 
   // --- wiring ---------------------------------------------------------------
 
@@ -1114,6 +2110,11 @@ const Social = (() => {
     location: sharedLocation,
     bind(p) {
       presence = p;
+      if (cursorChatOpen && cursorChatInput) {
+        cursorChatLastSentAt = -Infinity;
+        cursorChatLastSentText = null;
+        queueCursorChatSync(cursorChatInput.value, true);
+      }
     },
     onSelf({ color }) {
       selfColor = color;
@@ -1126,5 +2127,11 @@ const Social = (() => {
     onBullet({ text }) {
       spawnBullet(text, false);
     },
+    openCursorChat,
+    closeCursorChat,
+    trackPointer,
+    syncCustomCursor,
+    releaseCustomCursorFrame,
+    isCursorChatOpen,
   };
 })();

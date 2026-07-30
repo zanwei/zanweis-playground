@@ -50,6 +50,8 @@
   function releaseEverything() {
     if (finished) return;
     finished = true;
+    const shouldSignal = !window.__bootComplete;
+    window.__bootComplete = true;
     clearTimeout(window.__bootFailsafe);
     clearInterval(shuffleTimer);
     clearTimeout(settleTimer);
@@ -59,7 +61,7 @@
     html.classList.remove('booting', 'revealing');
     boot?.setAttribute('data-hidden', '');
     scrollTo(0, 0); // never land holding an offset from the doubled document
-    dispatchEvent(new Event('boot:done')); // previews hydrate from here
+    if (shouldSignal) dispatchEvent(new Event('boot:done')); // previews hydrate from here
   }
 
   // A window resize mid-intro changes 100dvh under a running transform: the
@@ -102,6 +104,14 @@
         brandFace.setAttribute('d', FACE_PATHS[face]);
       });
     }
+  }
+
+  // The head failsafe may have released a page whose final blocking script
+  // arrived very late. Treat that sticky state as terminal instead of
+  // starting a hidden "ghost" intro after the site is already interactive.
+  if (window.__bootComplete || boot.hasAttribute('data-hidden')) {
+    releaseEverything();
+    return;
   }
 
   // Brand-click refresh: no intro at all.

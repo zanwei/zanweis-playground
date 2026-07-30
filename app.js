@@ -327,12 +327,12 @@
       `${Math.min(index, 8) * tokenMs('--duration-stagger', 40)}ms`
     );
 
-    if (item.type === 'figma') {
-      // Figma explorations stay lightweight everywhere: the card and
-      // playground share one vendored image, while Source opens Figma.
+    if (item.type === 'figma' || item.type === 'image') {
+      // Static studies stay lightweight everywhere: the card and playground
+      // share one vendored image, while Source opens the original project.
       card.innerHTML = `
         <div class="card-media" style="aspect-ratio: ${item.aspect}; background: ${item.bg}">
-          <img class="figma-thumb" src="${item.thumb}" alt="" loading="lazy" />
+          <img class="static-thumb" src="${item.thumb}" alt="" loading="lazy" />
           <button class="card-hit" aria-label="Open ${item.title} playground"></button>
           <div class="card-visitors"></div>
           <span class="card-label">${item.title}</span>
@@ -481,6 +481,7 @@
   let lastFocus = null;
   let closeTimer = null;
   let playgroundEpoch = 0;
+  let playgroundFrameBridge = null;
   const shell = document.querySelector('.shell');
 
   // matched-geometry helpers: the modal surface flies between the card's
@@ -498,32 +499,326 @@
     return typeof p === 'string' && p.startsWith('components/') ? p : 'about:blank';
   }
 
-  // Only the repo demos load in the playground iframe. Figma explorations are
-  // rendered by the static image layer instead.
+  // Only the repo demos load in the playground iframe. Static explorations
+  // are rendered by the image layer instead.
   function playgroundUrl(item) {
     return demoUrl(item.demo);
   }
 
+  function disposePlaygroundFrameBridge(frame = null) {
+    const bridge = playgroundFrameBridge;
+    if (!bridge || (frame && bridge.frame !== frame)) return;
+    bridge.dispose();
+    if (playgroundFrameBridge === bridge) playgroundFrameBridge = null;
+  }
+
   function markPlaygroundFrameReady(frame, item, expected, epoch) {
     if (epoch !== playgroundEpoch || frame !== byModal.frame || openItem !== item) return;
-    if (frame.classList.contains('is-ready') || frame.getAttribute('src') !== expected) return;
+    if (frame.getAttribute('src') !== expected) return;
+    let frameDocument;
     try {
       if (!frame.contentWindow.location.pathname.endsWith(item.demo)) return;
+      frameDocument = frame.contentDocument;
     } catch {
       return;
     }
+    if (!frameDocument?.documentElement) return;
 
-    frame.classList.add('is-ready');
-    byModal.body.classList.add('is-live'); // placeholder thumb yields to the live view
-    // Keyboard focus lives inside the demo while the user plays with it, so
-    // Escape must be caught in the iframe too (same origin).
+    // Pointer and keyboard events do not bubble out of an iframe. Bridge the
+    // same-origin playground into the page-level cursor/chat handlers so the
+    // canvas still behaves like one shared surface.
     try {
-      frame.contentWindow.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && !e.defaultPrevented) closePlayground();
+      const frameWindow = frame.contentWindow;
+      const existingBridge = playgroundFrameBridge;
+      if (
+        existingBridge?.frame === frame &&
+        existingBridge.frameDocument === frameDocument
+      ) {
+        existingBridge.refreshGeometry();
+        Social.syncCustomCursor?.();
+        frame.classList.add('is-ready');
+        byModal.body.classList.add('is-live');
+        return;
+      }
+
+      disposePlaygroundFrameBridge();
+
+      let framePointer = null;
+      let disposed = false;
+      let geometryFrame = null;
+      let transitionGeometryFrame = null;
+      let transitionGeometryUntil = 0;
+      let resizeObserver = null;
+      const listenerCleanups = [];
+      const geometry = {
+        left: 0,
+        top: 0,
+        scaleX: 1,
+        scaleY: 1,
+        valid: false,
+      };
+
+      const listen = (target, type, handler, options) => {
+        if (!target?.addEventListener) return;
+        target.addEventListener(type, handler, options);
+        listenerCleanups.push(() => target.removeEventListener(type, handler, options));
+      };
+
+      const refreshGeometry = () => {
+        if (disposed) return false;
+        try {
+          if (
+            frame !== byModal.frame ||
+            frame.contentDocument !== frameDocument
+          ) {
+            geometry.valid = false;
+            return false;
+          }
+          const rect = frame.getBoundingClientRect();
+          const viewportWidth = Math.max(1, frameWindow.innerWidth);
+          const viewportHeight = Math.max(1, frameWindow.innerHeight);
+          const scaleX = rect.width / viewportWidth;
+          const scaleY = rect.height / viewportHeight;
+          if (
+            rect.width <= 0 ||
+            rect.height <= 0 ||
+            !Number.isFinite(rect.left) ||
+            !Number.isFinite(rect.top) ||
+            !Number.isFinite(scaleX) ||
+            !Number.isFinite(scaleY)
+          ) {
+            geometry.valid = false;
+            return false;
+          }
+          geometry.left = rect.left;
+          geometry.top = rect.top;
+          geometry.scaleX = scaleX;
+          geometry.scaleY = scaleY;
+          geometry.valid = true;
+          return true;
+        } catch {
+          geometry.valid = false;
+          return false;
+        }
+      };
+
+      const scheduleGeometryRefresh = () => {
+        if (
+          disposed ||
+          geometryFrame !== null ||
+          transitionGeometryFrame !== null
+        ) {
+          return;
+        }
+        geometryFrame = requestAnimationFrame(() => {
+          geometryFrame = null;
+          refreshGeometry();
+        });
+      };
+
+      // A transformed modal changes the iframe's visual rect without
+      // triggering ResizeObserver. Follow only the short compositor flight,
+      // then park again; pointer events themselves never read layout.
+      const followTransitionGeometry = (now) => {
+        transitionGeometryFrame = null;
+        if (disposed) return;
+        refreshGeometry();
+        if (now < transitionGeometryUntil) {
+          transitionGeometryFrame = requestAnimationFrame(followTransitionGeometry);
+        }
+      };
+      const startTransitionGeometry = () => {
+        if (disposed) return;
+        transitionGeometryUntil = performance.now() + fastMs() + 80;
+        if (geometryFrame !== null) {
+          cancelAnimationFrame(geometryFrame);
+          geometryFrame = null;
+        }
+        if (transitionGeometryFrame === null) {
+          transitionGeometryFrame = requestAnimationFrame(followTransitionGeometry);
+        }
+      };
+      const finishTransitionGeometry = () => {
+        transitionGeometryUntil = 0;
+        if (transitionGeometryFrame !== null) {
+          cancelAnimationFrame(transitionGeometryFrame);
+          transitionGeometryFrame = null;
+        }
+        scheduleGeometryRefresh();
+      };
+
+      let bridge = null;
+      bridge = {
+        frame,
+        frameDocument,
+        refreshGeometry,
+        scheduleGeometryRefresh,
+        dispose() {
+          if (disposed) return;
+          disposed = true;
+          geometry.valid = false;
+          framePointer = null;
+          if (geometryFrame !== null) cancelAnimationFrame(geometryFrame);
+          if (transitionGeometryFrame !== null) {
+            cancelAnimationFrame(transitionGeometryFrame);
+          }
+          geometryFrame = null;
+          transitionGeometryFrame = null;
+          resizeObserver?.disconnect();
+          resizeObserver = null;
+          for (const cleanup of listenerCleanups.splice(0)) {
+            try {
+              cleanup();
+            } catch {
+              /* a navigated WindowProxy may already reject parent access */
+            }
+          }
+        },
+      };
+      playgroundFrameBridge = bridge;
+
+      const parentPoint = (e) => {
+        if (!geometry.valid) return null;
+        framePointer ||= { x: 0, y: 0 };
+        framePointer.x = geometry.left + e.clientX * geometry.scaleX;
+        framePointer.y = geometry.top + e.clientY * geometry.scaleY;
+        return framePointer;
+      };
+      const isEditableEvent = (event) => {
+        const path =
+          typeof event.composedPath === 'function' ? event.composedPath() : [event.target];
+        return path.some(
+          (node) =>
+            node?.nodeType === 1 &&
+            (node.tagName === 'INPUT' ||
+              node.tagName === 'TEXTAREA' ||
+              node.tagName === 'SELECT' ||
+              node.isContentEditable)
+        );
+      };
+
+      const handlePointerMove = (e) => {
+        const point = parentPoint(e);
+        if (!point) return;
+        Social.trackPointer?.(point.x, point.y);
+        presence?.pointerMove?.(point.x, point.y);
+      };
+      const handlePointerDown = (e) => {
+        const point = parentPoint(e);
+        if (point) {
+          Social.trackPointer?.(point.x, point.y);
+          presence?.pointerMove?.(point.x, point.y);
+        }
+        if (Social.isCursorChatOpen?.()) Social.closeCursorChat?.();
+      };
+      const handlePageHide = () => {
+        if (
+          epoch === playgroundEpoch &&
+          frame === byModal.frame &&
+          openItem === item
+        ) {
+          frame.classList.remove('is-ready');
+          byModal.body.classList.remove('is-live');
+        }
+        if (playgroundFrameBridge === bridge) {
+          disposePlaygroundFrameBridge(frame);
+        } else {
+          bridge.dispose();
+        }
+      };
+      const handleKeyDown = (e) => {
+        if (
+          e.key === '/' &&
+          !e.defaultPrevented &&
+          !e.repeat &&
+          !e.metaKey &&
+          !e.ctrlKey &&
+          !e.altKey &&
+          !e.isComposing &&
+          e.keyCode !== 229 &&
+          !isEditableEvent(e)
+        ) {
+          e.preventDefault();
+          e.stopPropagation();
+          Social.openCursorChat?.(framePointer);
+          return;
+        }
+        if (e.key !== 'Escape' || e.defaultPrevented) return;
+        if (Social.isCursorChatOpen?.()) {
+          e.preventDefault();
+          e.stopPropagation();
+          Social.closeCursorChat?.();
+          return;
+        }
+        closePlayground();
+      };
+      const handleModalTransitionRun = (event) => {
+        if (
+          event.target === byModal.window &&
+          event.propertyName === 'transform'
+        ) {
+          startTransitionGeometry();
+        }
+      };
+      const handleModalTransitionDone = (event) => {
+        if (
+          event.target === byModal.window &&
+          event.propertyName === 'transform'
+        ) {
+          finishTransitionGeometry();
+        }
+      };
+
+      listen(
+        frameWindow,
+        'pointermove',
+        handlePointerMove,
+        { passive: true }
+      );
+      listen(
+        frameWindow,
+        'pointerdown',
+        handlePointerDown,
+        { capture: true, passive: true }
+      );
+      listen(frameWindow, 'pagehide', handlePageHide);
+      listen(frameWindow, 'keydown', handleKeyDown);
+      listen(frameWindow, 'resize', scheduleGeometryRefresh, { passive: true });
+      listen(frameWindow, 'scroll', scheduleGeometryRefresh, { passive: true });
+      listen(window, 'resize', scheduleGeometryRefresh, { passive: true });
+      listen(window, 'scroll', scheduleGeometryRefresh, {
+        capture: true,
+        passive: true,
       });
+      listen(window.visualViewport, 'resize', scheduleGeometryRefresh, {
+        passive: true,
+      });
+      listen(window.visualViewport, 'scroll', scheduleGeometryRefresh, {
+        passive: true,
+      });
+      listen(byModal.window, 'transitionrun', handleModalTransitionRun);
+      listen(byModal.window, 'transitionend', handleModalTransitionDone);
+      listen(byModal.window, 'transitioncancel', handleModalTransitionDone);
+
+      if (typeof ResizeObserver === 'function') {
+        resizeObserver = new ResizeObserver(scheduleGeometryRefresh);
+        resizeObserver.observe(frame);
+      }
+
+      refreshGeometry();
+      if (getComputedStyle(byModal.window).transform !== 'none') {
+        startTransitionGeometry();
+      }
+      Social.syncCustomCursor?.();
     } catch {
+      disposePlaygroundFrameBridge(frame);
       /* a replaced frame can disappear between load and listener setup */
     }
+    // Keep the iframe untargetable until its own document has hidden the
+    // native cursor; otherwise the first expansion frame flashes a system
+    // arrow before the custom cursor bridge takes over.
+    frame.classList.add('is-ready');
+    byModal.body.classList.add('is-live'); // placeholder thumb yields to the live view
   }
 
   function replacePlaygroundFrame(item = null, epoch = playgroundEpoch) {
@@ -547,7 +842,9 @@
     }
 
     const previous = byModal.frame;
+    disposePlaygroundFrameBridge(previous);
     byModal.frame = frame;
+    Social.releaseCustomCursorFrame?.(previous);
     previous.replaceWith(frame);
     return frame;
   }
@@ -588,6 +885,7 @@
     // Defensive cleanup for a close interrupted while running older code.
     byModal.frame.style.removeProperty('opacity');
     byModal.frame.style.removeProperty('transition');
+    playgroundFrameBridge?.scheduleGeometryRefresh();
   }
 
   function resetPlaygroundVideo() {
@@ -851,7 +1149,7 @@
   byModal.close.addEventListener('click', closePlayground);
   byModal.backdrop.addEventListener('click', closePlayground);
   addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && openItem) closePlayground();
+    if (e.key === 'Escape' && !e.defaultPrevented && openItem) closePlayground();
   });
   document.addEventListener('visibilitychange', () => {
     if (openItem?.type !== 'video') return;

@@ -71,9 +71,11 @@
           scrollTo(0, 0);
         });
         window.__bootFailsafe = setTimeout(function () {
+          window.__bootComplete = true;
           document.documentElement.classList.remove('booting', 'revealing');
           var b = document.getElementById('boot');
           if (b) b.setAttribute('data-hidden', '');
+          dispatchEvent(new Event('boot:done'));
         }, 5200);
       })();
     </script>
@@ -94,12 +96,13 @@
           <button
             class="chat-hint"
             id="chat-hint"
-            title="Open Bullet screen"
-            aria-controls="chat-dock"
+            title="Open cursor chat"
+            aria-label="Open cursor chat"
+            aria-controls="cursor-chat-composer"
             aria-expanded="false"
           >
             <kbd>/</kbd>
-            <span>for bullet screen</span>
+            <span>for chat</span>
           </button>
         <div class="online-wrap">
           <button
