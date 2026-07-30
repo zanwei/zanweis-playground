@@ -59,12 +59,12 @@ export class VideoAsset extends WorkerEntrypoint {
 const CURSOR_COLORS = ['orange', 'violet', 'green', 'pink', 'blue', 'amber'];
 
 const MAX_PEERS = 1200;
-const REALTIME_MAX = 12; // small rooms relay per-event, live
-const TICK_MS = 50;
+const REALTIME_MAX = 12; // small rooms bypass the crowded-room chat limiter
+const TICK_MS = 33;
 const TICK_CURSOR_CAP = 40;
 const TICK_CHAT_CAP = 20;
+const TICK_ATTACHMENT_CAP = TICK_CURSOR_CAP + TICK_CHAT_CAP;
 const CURSOR_MIN_MS = 30;
-const CURSOR_MIN_RT_MS = 15;
 const META_MIN_MS = 900;
 const CHAT_TTL_MS = 5000;
 const CHAT_RATE_PER_SEC = 25;
@@ -235,6 +235,7 @@ export class PresenceRoom {
     this.pendingCursors = new Map(); // id -> { a, fx, fy }
     this.pendingChats = new Map(); // id -> latest unexpired chat snapshot
     this.pendingLikeCounts = new Map(); // card -> latest authoritative count
+    this.pendingAttachmentWrites = new Set(); // ws -> latest in-memory state
     this.countDirty = false;
     this.tickTimer = null;
     this.activitySequence = 0;
@@ -374,6 +375,7 @@ export class PresenceRoom {
 
   persistConnection(ws, connection = this.peers.get(ws)) {
     if (!connection) return false;
+    this.pendingAttachmentWrites.delete(ws);
     const { user } = connection;
     try {
       ws.serializeAttachment({
@@ -413,11 +415,36 @@ export class PresenceRoom {
     }
   }
 
-  persistChatChanges(user, currentWs) {
-    if (!this.persistConnection(currentWs)) this.queueFailedSocket(currentWs);
+  queueConnectionPersist(ws, connection = this.peers.get(ws)) {
+    if (!connection || this.failedSockets.has(ws) || this.closedSockets.has(ws)) return;
+    connection.attachmentDirty = true;
+    this.pendingAttachmentWrites.add(ws);
+    this.ensureTick();
+  }
+
+  flushPendingConnectionPersists() {
+    let count = 0;
+    for (const ws of this.pendingAttachmentWrites) {
+      this.pendingAttachmentWrites.delete(ws);
+      const connection = this.peers.get(ws);
+      if (connection && !this.persistConnection(ws, connection)) {
+        this.queueFailedSocket(ws);
+      }
+      if (++count >= TICK_ATTACHMENT_CAP) break;
+    }
+  }
+
+  persistChatChanges(user, currentWs, immediate = false) {
+    if (immediate) {
+      if (!this.persistConnection(currentWs)) this.queueFailedSocket(currentWs);
+    } else {
+      this.queueConnectionPersist(currentWs);
+    }
     for (const ws of user.connections) {
       if (ws === currentWs) continue;
       const connection = this.peers.get(ws);
+      // Superseded sibling state is rare and safety-critical: persist it
+      // immediately so a hibernation wake can never resurrect the old owner.
       if (
         connection?.attachmentDirty &&
         !this.persistConnection(ws, connection)
@@ -538,14 +565,8 @@ export class PresenceRoom {
   publishChat(user, chat, now = Date.now()) {
     const entry = this.chatEntry(user, chat, now);
     if (!entry) return;
-    if (this.isRealtimeRoom()) {
-      this.pendingChats.delete(user.id);
-      this.cancelTickIfIdle();
-      this.broadcast({ t: 'chat', ...entry }, user.id);
-    } else {
-      this.pendingChats.set(user.id, { ...entry, expiresAt: chat.expiresAt });
-      this.ensureTick();
-    }
+    this.pendingChats.set(user.id, { ...entry, expiresAt: chat.expiresAt });
+    this.ensureTick();
   }
 
   clearOwnedChat(user, connection, session = null) {
@@ -828,6 +849,7 @@ export class PresenceRoom {
   drop(ws) {
     if (this.closedSockets.has(ws)) return;
     this.closedSockets.add(ws);
+    this.pendingAttachmentWrites.delete(ws);
     const connection = this.peers.get(ws);
     if (!connection) {
       // A close event can be the event that wakes a hibernated object. Some
@@ -917,6 +939,7 @@ export class PresenceRoom {
       this.pendingCursors.clear();
       this.pendingChats.clear();
       this.pendingLikeCounts.clear();
+      this.pendingAttachmentWrites.clear();
       return;
     }
     if (this.countDirty) {
@@ -951,6 +974,9 @@ export class PresenceRoom {
       }
       if (list.length) this.broadcast({ t: 'cursors', list });
     }
+    if (this.pendingAttachmentWrites.size) {
+      this.flushPendingConnectionPersists();
+    }
     this.ensureTick();
   }
 
@@ -962,6 +988,7 @@ export class PresenceRoom {
       this.pendingCursors.clear();
       this.pendingChats.clear();
       this.pendingLikeCounts.clear();
+      this.pendingAttachmentWrites.clear();
       return;
     }
     if (this.tickTimer !== null) return;
@@ -969,7 +996,8 @@ export class PresenceRoom {
       !this.countDirty &&
       !this.pendingLikeCounts.size &&
       !this.pendingCursors.size &&
-      !this.pendingChats.size
+      !this.pendingChats.size &&
+      !this.pendingAttachmentWrites.size
     ) {
       return;
     }
@@ -982,7 +1010,8 @@ export class PresenceRoom {
       !this.countDirty &&
       !this.pendingLikeCounts.size &&
       !this.pendingCursors.size &&
-      !this.pendingChats.size
+      !this.pendingChats.size &&
+      !this.pendingAttachmentWrites.size
     ) {
       clearTimeout(this.tickTimer);
       this.tickTimer = null;
@@ -1083,9 +1112,7 @@ export class PresenceRoom {
 
     switch (msg.t) {
       case 'cursor': {
-        const realtime = this.isRealtimeRoom();
-        const floor = realtime ? CURSOR_MIN_RT_MS : CURSOR_MIN_MS;
-        if (now - connection.cursorAt < floor) break;
+        if (now - connection.cursorAt < CURSOR_MIN_MS) break;
         connection.cursorAt = now;
         const entry = { a: msg.a, fx: msg.fx, fy: msg.fy };
         const event = { id, t: 'cursor', ...entry };
@@ -1095,15 +1122,8 @@ export class PresenceRoom {
         user.stateSeq = connection.cursorSeq;
         user.idle = false;
         user.lastEvent = event;
-        if (realtime) {
-          this.pendingCursors.delete(id);
-          this.cancelTickIfIdle();
-          this.broadcast({ t: 'cursor', id, ...entry, color: user.color }, id);
-        } else {
-          this.pendingCursors.set(id, { ...entry, color: user.color });
-          this.ensureTick();
-        }
-        this.persistConnection(ws, connection);
+        this.pendingCursors.set(id, { ...entry, color: user.color });
+        this.queueConnectionPersist(ws, connection);
         break;
       }
       case 'bullet': {
@@ -1121,7 +1141,9 @@ export class PresenceRoom {
       case 'chat': {
         const parsed = parseChatMessage(msg);
         if (!parsed || !this.applyChat(user, connection, parsed, now)) break;
-        this.persistChatChanges(user, ws);
+        // Clear is a control message: broadcast and persist it immediately.
+        // Ordinary typing state can share the 33 ms cursor/chat tick.
+        this.persistChatChanges(user, ws, !parsed.text);
         break;
       }
       case 'focus':

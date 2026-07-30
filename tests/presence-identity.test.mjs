@@ -168,6 +168,16 @@ function sentChats(socket, predicate = () => true) {
   return socket.sent.flatMap(chatEntries).filter(predicate);
 }
 
+function cursorEntries(message) {
+  if (message?.t === 'cursor') return [message];
+  if (message?.t === 'cursors' && Array.isArray(message.list)) return message.list;
+  return [];
+}
+
+function sentCursors(socket, predicate = () => true) {
+  return socket.sent.flatMap(cursorEntries).filter(predicate);
+}
+
 test('SSE keeps private identities secret and aggregates connection state', async (t) => {
   const baseUrl = await startLocalPresence(t);
   const observerClientId = 'observer_private_0001';
@@ -909,8 +919,9 @@ test('Durable Object restores unique users and a late close cannot delete a new 
   );
   await room.webSocketMessage(oldSocket, JSON.stringify({ t: 'spray', on: 1 }));
   await room.webSocketMessage(siblingSocket, JSON.stringify({ t: 'spray', on: 1 }));
+  room.tick();
   assert.equal(
-    otherSocket.sent.some((message) => message.t === 'cursor' && message.id === userId),
+    sentCursors(otherSocket, (cursor) => cursor.id === userId).length > 0,
     true
   );
   assert.equal(
@@ -925,7 +936,7 @@ test('Durable Object restores unique users and a late close cannot delete a new 
     siblingSocket.sent.some(
       (message) =>
         message.id === userId &&
-        (message.t === 'cursor' || message.t === 'bullet' || message.t === 'loc')
+        (message.t === 'bullet' || message.t === 'loc')
     ),
     false
   );
@@ -1223,8 +1234,8 @@ test('Durable Object restores unique users and a late close cannot delete a new 
   activeReconcileRoom.drop(activeSibling);
   activeReconcileRoom.drop(activeObserver);
 
-  // A cursor queued in the 13-user coalesced tier must be discarded when the
-  // room drops to 12 users and that same user sends a newer realtime cursor.
+  // Cursor delivery remains latest-wins when a room crosses the old realtime
+  // threshold: small rooms use the same batched path as crowded rooms.
   const crowdedSockets = Array.from({ length: 13 }, (_, index) => {
     const suffix = (index + 1).toString(16).padStart(12, '0');
     return new FakeSocket(
@@ -1249,22 +1260,21 @@ test('Durable Object restores unique users and a late close cannot delete a new 
     crowdedSender,
     JSON.stringify({ t: 'cursor', a: 'page', fx: 0.9, fy: 90 })
   );
-  assert.equal(crowdedRoom.pendingCursors.has(crowdedSenderId), false);
+  assert.equal(crowdedRoom.pendingCursors.has(crowdedSenderId), true);
   assert.equal(
     crowdedObserver.sent.some(
       (message) =>
         message.t === 'cursor' && message.id === crowdedSenderId && message.fx === 0.9
     ),
-    true
+    false
   );
   crowdedRoom.tick();
-  assert.equal(
-    crowdedObserver.sent.some(
-      (message) =>
-        message.t === 'cursors' &&
-        message.list.some((entry) => entry.id === crowdedSenderId)
-    ),
-    false
+  assert.deepEqual(
+    sentCursors(
+      crowdedObserver,
+      (cursor) => cursor.id === crowdedSenderId
+    ).map((cursor) => cursor.fx),
+    [0.9]
   );
   for (const socket of crowdedSockets) crowdedRoom.drop(socket);
   assert.equal(crowdedRoom.tickTimer, null);
@@ -1374,6 +1384,7 @@ test('PresenceRoom treats thirteen tabs from one user as crowded', async () => {
       ttlMs: 5000,
     })
   );
+  room.tick();
   assert.equal(oldConnection.chatTokens, 3);
   assert.equal(oldConnection.chatSeqs.get(session), 2);
   assert.deepEqual(
@@ -1417,6 +1428,9 @@ test('PresenceRoom chat keeps one latest owner and clears on idle or final drop'
       ttlMs: 5000,
     })
   );
+  assert.equal(sentChats(observer).length, 0);
+  assert.equal(room.pendingChats.has(userId), true);
+  room.tick();
   const first = sentChats(
     observer,
     (chat) => chat.id === userId && chat.text === 'first owner'
@@ -1427,7 +1441,7 @@ test('PresenceRoom chat keeps one latest owner and clears on idle or final drop'
   assert.equal(JSON.stringify(first).includes(clientId), false);
   assert.equal(
     replacement.sent.some(
-      (message) => chatEntries(message).some((chat) => chat.id === userId)
+      (message) => message.t === 'chat' && message.id === userId
     ),
     false
   );
@@ -1446,6 +1460,7 @@ test('PresenceRoom chat keeps one latest owner and clears on idle or final drop'
       ttlMs: 5000,
     })
   );
+  room.tick();
   const replacementChat = sentChats(
     observer,
     (chat) => chat.id === userId && chat.text === 'replacement owner'
@@ -1496,6 +1511,7 @@ test('PresenceRoom chat keeps one latest owner and clears on idle or final drop'
       ttlMs: 5000,
     })
   );
+  room.tick();
   const oldReturnChat = sentChats(
     observer,
     (chat) => chat.id === userId && chat.text === 'old room connection returns'
@@ -1516,6 +1532,7 @@ test('PresenceRoom chat keeps one latest owner and clears on idle or final drop'
       ttlMs: 5000,
     })
   );
+  room.tick();
   const replacementReturnChat = sentChats(
     observer,
     (chat) =>
@@ -1647,7 +1664,7 @@ test('PresenceRoom chat keeps one latest owner and clears on idle or final drop'
   assert.equal(room.tickTimer, null);
 });
 
-test('PresenceRoom serializes only sockets whose attachment state changed', async () => {
+test('PresenceRoom coalesces hot attachment writes and only serializes changed sockets', async () => {
   const PresenceRoom = await importPresenceRoom();
   const clientId = 'precise_attachment_user_0001';
   const userId = 'p.72727272-7272-4272-8272-727272727272';
@@ -1675,7 +1692,7 @@ test('PresenceRoom serializes only sockets whose attachment state changed', asyn
 
   assert.equal(
     first.serializeCount,
-    initialFirstWrites + ordinaryMessages.length
+    initialFirstWrites + ordinaryMessages.length - 1
   );
   assert.equal(sibling.serializeCount, initialSiblingWrites);
   assert.equal(observer.serializeCount, initialObserverWrites);
@@ -1701,9 +1718,32 @@ test('PresenceRoom serializes only sockets whose attachment state changed', asyn
       ttlMs: 5000,
     })
   );
+  assert.equal(first.serializeCount, beforeFirstChat.first);
+  await room.webSocketMessage(
+    first,
+    JSON.stringify({
+      t: 'chat',
+      session: firstSession,
+      seq: 2,
+      text: 'first owns latest chat',
+      a: 'page',
+      fx: 0.35,
+      fy: 35,
+      ttlMs: 5000,
+    })
+  );
+  assert.equal(first.serializeCount, beforeFirstChat.first);
+  room.tick();
   assert.equal(first.serializeCount, beforeFirstChat.first + 1);
   assert.equal(sibling.serializeCount, beforeFirstChat.sibling);
   assert.equal(observer.serializeCount, beforeFirstChat.observer);
+  assert.equal(first.attachment.connection.chat.text, 'first owns latest chat');
+  assert.deepEqual(
+    first.attachment.connection.chatSeqs.find(
+      ([storedSession]) => storedSession === firstSession
+    ),
+    [firstSession, 2]
+  );
 
   const siblingSession = 'precise_attachment_second_1';
   const beforeTakeover = {
@@ -1724,6 +1764,8 @@ test('PresenceRoom serializes only sockets whose attachment state changed', asyn
       ttlMs: 5000,
     })
   );
+  assert.equal(sibling.serializeCount, beforeTakeover.sibling);
+  room.tick();
 
   assert.equal(first.serializeCount, beforeTakeover.first + 1);
   assert.equal(sibling.serializeCount, beforeTakeover.sibling + 1);
@@ -1770,6 +1812,7 @@ test('PresenceRoom evicts a chat owner when an explicit clear cannot be persiste
       ttlMs: 5000,
     })
   );
+  room.tick();
   assert.equal(owner.attachment.connection.chat.session, session);
 
   owner.serializeFailures = 1;
@@ -1854,6 +1897,7 @@ test('PresenceRoom evicts a stale sibling when takeover persistence fails', asyn
       ttlMs: 5000,
     })
   );
+  room.tick();
   oldOwner.serializeFailures = 1;
 
   await room.webSocketMessage(
@@ -1992,6 +2036,7 @@ test('PresenceRoom restores unexpired chat attachment and forgets expired text',
       ttlMs: 5000,
     })
   );
+  activeRoom.tick();
   assert.equal(
     sentChats(
       activeObserver,
@@ -2075,6 +2120,7 @@ test('PresenceRoom restores unexpired chat attachment and forgets expired text',
       ttlMs: 5000,
     })
   );
+  expiredRoom.tick();
   assert.equal(
     sentChats(
       expiredObserver,
@@ -2120,6 +2166,7 @@ test('PresenceRoom bounds chat session histories across serialization and restor
       })
     );
   }
+  room.tick();
 
   const liveConnection = room.peers.get(sender);
   assert.equal(liveConnection.chat.session, activeSession);
@@ -2193,6 +2240,7 @@ test('PresenceRoom bounds chat session histories across serialization and restor
       ttlMs: 5000,
     })
   );
+  restoredRoom.tick();
   assert.equal(
     sentChats(
       restoredObserver,
@@ -2316,6 +2364,7 @@ test('PresenceRoom coalesces crowded chat updates and never delays clear', async
       ttlMs: 5000,
     })
   );
+  room.tick();
   assert.equal(room.users.get(sender.attachment.clientId).chat.text, 'queued latest value');
   assert.equal(room.pendingChats.has(senderId), false);
   assert.equal(senderConnection.chatSeqs.get(session), 3);
