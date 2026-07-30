@@ -1304,7 +1304,8 @@ const Social = (() => {
     if (policy.shadowObservers.has(shadowRoot)) return;
 
     let observer = null;
-    const FrameMutationObserver = policy.document.defaultView?.MutationObserver;
+    const FrameMutationObserver =
+      shadowRoot.ownerDocument?.defaultView?.MutationObserver;
     if (typeof FrameMutationObserver === 'function') {
       observer = new FrameMutationObserver((entries) => {
         if (policy.disposed) return;
@@ -1316,7 +1317,14 @@ const Social = (() => {
         }
         pruneCustomCursorShadowRoots(policy);
       });
-      observer.observe(shadowRoot, { childList: true, subtree: true });
+      try {
+        observer.observe(shadowRoot, { childList: true, subtree: true });
+      } catch {
+        // An iframe can navigate between discovery and observation. Cursor
+        // styling is cosmetic, so a stale cross-realm root must fail open.
+        observer.disconnect();
+        observer = null;
+      }
     }
     policy.shadowObservers.set(shadowRoot, observer);
     scanCustomCursorNode(policy, shadowRoot);
@@ -1390,7 +1398,8 @@ const Social = (() => {
     patchCustomCursorShadowCreation(policy);
     scanCustomCursorNode(policy, observedRoot);
 
-    const FrameMutationObserver = frameDocument.defaultView?.MutationObserver;
+    const FrameMutationObserver =
+      observedRoot.ownerDocument?.defaultView?.MutationObserver;
     if (typeof FrameMutationObserver === 'function') {
       policy.documentObserver = new FrameMutationObserver((entries) => {
         if (policy.disposed) return;
@@ -1402,10 +1411,16 @@ const Social = (() => {
         }
         pruneCustomCursorShadowRoots(policy);
       });
-      policy.documentObserver.observe(observedRoot, {
-        childList: true,
-        subtree: true,
-      });
+      try {
+        policy.documentObserver.observe(observedRoot, {
+          childList: true,
+          subtree: true,
+        });
+      } catch {
+        // The frame was replaced while its policy was being installed.
+        policy.documentObserver.disconnect();
+        policy.documentObserver = null;
+      }
     }
     return policy;
   }
@@ -2105,10 +2120,15 @@ const Social = (() => {
     socialChromeBootObserver = new MutationObserver(() => {
       if (!bootInProgress()) revealSocialChrome(false);
     });
-    socialChromeBootObserver.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ['class'],
-    });
+    try {
+      socialChromeBootObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['class'],
+      });
+    } catch {
+      socialChromeBootObserver.disconnect();
+      socialChromeBootObserver = null;
+    }
   } else {
     revealSocialChrome(true);
   }
