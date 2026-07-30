@@ -13,7 +13,7 @@
 
 const Social = (() => {
   const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
-  const finePointer = matchMedia('(pointer: fine)');
+  const finePointer = matchMedia('(any-pointer: fine)');
   const bootInProgress = () => {
     const root = document.documentElement;
     return (
@@ -1081,17 +1081,20 @@ const Social = (() => {
       getComputedStyle(document.documentElement).getPropertyValue(
         '--duration-cursor-chat'
       )
-    ) || 320;
+    ) || 2000;
   const CURSOR_CHAT_SYNC_MS = 50;
+  const CURSOR_CHAT_BLUR_SETTLE_MS = 32;
   const CURSOR_CHAT_MAX_POINTS = 120;
   const CURSOR_CHAT_EDGE = 12;
   const CURSOR_CHAT_GAP_X = 12;
   const CURSOR_CHAT_GAP_Y = 14;
+  const CURSOR_CHAT_HINT_GAP_Y = 28;
   const CURSOR_CHAT_MIN_INPUT_PX = 96;
   const CURSOR_CHAT_FLIP_HYSTERESIS = 22;
   const CURSOR_CHAT_CONTROL_TEST_RE = /[\u0000-\u001f\u007f]/u;
   const CURSOR_CHAT_CONTROL_RE = /[\u0000-\u001f\u007f]/gu;
   const CUSTOM_CURSOR_ACTIVE_ATTR = 'data-custom-cursor-active';
+  const CUSTOM_CURSOR_DOM_ATTR = 'data-custom-cursor-dom';
   const CUSTOM_CURSOR_STYLE_ATTR = 'data-custom-cursor-style';
   const CUSTOM_CURSOR_SHADOW_STYLE_ATTR = 'data-custom-cursor-shadow-style';
   const CUSTOM_CURSOR_PATH =
@@ -1126,17 +1129,31 @@ const Social = (() => {
     `url("data:image/svg+xml,${encodeURIComponent(CUSTOM_CURSOR_SVG_SOURCE)}") 4 3, default`;
   const CUSTOM_CURSOR_DOCUMENT_CSS =
     `html[${CUSTOM_CURSOR_ACTIVE_ATTR}],` +
-    `html[${CUSTOM_CURSOR_ACTIVE_ATTR}] *,` +
-    `html[${CUSTOM_CURSOR_ACTIVE_ATTR}] *::before,` +
-    `html[${CUSTOM_CURSOR_ACTIVE_ATTR}] *::after{cursor:${CUSTOM_CURSOR_CSS_VALUE}!important}`;
+    `html[${CUSTOM_CURSOR_ACTIVE_ATTR}] *{cursor:${CUSTOM_CURSOR_CSS_VALUE}!important}` +
+    `html[${CUSTOM_CURSOR_ACTIVE_ATTR}][${CUSTOM_CURSOR_DOM_ATTR}],` +
+    `html[${CUSTOM_CURSOR_ACTIVE_ATTR}][${CUSTOM_CURSOR_DOM_ATTR}] *{cursor:none!important}`;
   const CUSTOM_CURSOR_SHADOW_CSS =
     `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}]),` +
-    `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}]) *,` +
-    `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}]) *::before,` +
-    `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}]) *::after{cursor:${CUSTOM_CURSOR_CSS_VALUE}!important}`;
+    `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}]) *{cursor:${CUSTOM_CURSOR_CSS_VALUE}!important}` +
+    `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}][${CUSTOM_CURSOR_DOM_ATTR}]),` +
+    `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}][${CUSTOM_CURSOR_DOM_ATTR}]) *{cursor:none!important}`;
+  const CUSTOM_CURSOR_SVG = `
+    <svg width="24" height="24" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+      <g filter="url(#site-cursor-shadow)">
+        <path d="${CUSTOM_CURSOR_PATH}" fill="currentColor" stroke="#fff"
+          stroke-width="2" stroke-linejoin="round"/>
+      </g>
+      ${CUSTOM_CURSOR_FILTER}
+    </svg>`;
 
-  let cursorPoint = { x: innerWidth / 2, y: innerHeight / 2 };
-  let cursorPointValid = false;
+  const bootstrapPointer = window.__cursorChatBootstrap?.point;
+  const bootstrapPointerValid =
+    Number.isFinite(bootstrapPointer?.x) &&
+    Number.isFinite(bootstrapPointer?.y);
+  let cursorPoint = bootstrapPointerValid
+    ? { x: bootstrapPointer.x, y: bootstrapPointer.y }
+    : { x: 0, y: 0 };
+  let cursorPointValid = bootstrapPointerValid;
   let cursorChatEl = null;
   let cursorChatBubble = null;
   let cursorChatInput = null;
@@ -1156,11 +1173,24 @@ const Social = (() => {
   let cursorChatLayoutFrame = null;
   let cursorChatLayoutNeedsMeasure = false;
   let cursorChatRenderFrame = null;
+  let cursorChatBootFrame = null;
+  let cursorChatWindowBlurTimer = null;
+  let cursorChatRefocusFrame = null;
   const customCursorPolicies = new Map();
+  const customCursorEditableDocuments = new Set();
   let customCursorRootStyled = false;
+  let customCursorRootActive = null;
+  let customCursorRootDomFollower = null;
   let cursorChatOpen = false;
+  let cursorChatAwaitingBoot = false;
+  let cursorChatPendingPreferRight = false;
+  let cursorChatPendingOwner = null;
+  let cursorPointProvisional = false;
+  let cursorChatCursorActive = false;
   let cursorChatFading = false;
   let cursorChatComposing = false;
+  let cursorDomHandoffPending = false;
+  let cursorDomHandoffReady = false;
   let cursorChatSession = null;
   let cursorChatSequence = 0;
   let cursorChatLastSentAt = -Infinity;
@@ -1171,6 +1201,8 @@ const Social = (() => {
   let cursorChatFadeTimer = null;
   let cursorChatSideX = 'right';
   let cursorChatSideY = 'bottom';
+  let cursorChatPreferRightUntilFit = false;
+  let cursorChatOpenedFromHint = false;
 
   const clamp = (value, min, max) => Math.min(Math.max(value, min), Math.max(min, max));
 
@@ -1218,6 +1250,94 @@ const Social = (() => {
     return clean;
   }
 
+  function elementUsesTypingCursor(node) {
+    if (!node || node.nodeType !== 1 || node.matches?.(':disabled')) return false;
+    if (node.isContentEditable) return true;
+    if (node.tagName === 'TEXTAREA') return !node.readOnly;
+    if (node.tagName !== 'INPUT' || node.readOnly) return false;
+    return !/^(?:button|checkbox|color|file|hidden|image|radio|range|reset|submit)$/i.test(
+      node.type || 'text'
+    );
+  }
+
+  function documentHasTypingFocus(frameDocument) {
+    let active = frameDocument?.activeElement;
+    while (active?.shadowRoot?.activeElement) {
+      active = active.shadowRoot.activeElement;
+    }
+    // Cursor Chat owns its follower for the whole session. Do not let a
+    // delayed focusout microtask enroll its input in the generic typing set.
+    if (active === cursorChatInput) return false;
+    return elementUsesTypingCursor(active);
+  }
+
+  function cursorDomRequested() {
+    return cursorChatCursorActive || customCursorEditableDocuments.size > 0;
+  }
+
+  function cursorDomVisible() {
+    return (
+      finePointer.matches &&
+      cursorPointValid &&
+      (cursorDomRequested() || cursorDomHandoffPending)
+    );
+  }
+
+  function cursorFollowerVisible() {
+    return (
+      finePointer.matches &&
+      cursorPointValid &&
+      (cursorChatOpen || cursorDomRequested() || cursorDomHandoffPending)
+    );
+  }
+
+  function syncTypingCursorDocument(frameDocument, focused) {
+    const hadFocus = customCursorEditableDocuments.has(frameDocument);
+    if (focused) {
+      customCursorEditableDocuments.add(frameDocument);
+      cursorDomHandoffPending = false;
+      cursorDomHandoffReady = false;
+    } else {
+      customCursorEditableDocuments.delete(frameDocument);
+      if (hadFocus && !cursorDomRequested()) {
+        cursorDomHandoffPending =
+          finePointer.matches && cursorPointValid;
+        cursorDomHandoffReady = false;
+      }
+    }
+    if (hadFocus === focused) return;
+
+    ensureCursorChat();
+    // Establish visibility and the compositor layer before committing the
+    // first transform. This avoids a cold first-focus frame getting stuck.
+    syncCursorChatVisibility();
+    if (cursorFollowerVisible()) renderCursorChatNow();
+    syncCustomCursor();
+  }
+
+  function handleTypingCursorFocusIn(frameDocument, event) {
+    // Cursor Chat already owns the DOM follower. Letting its autofocus enter
+    // the generic typing path would repeat the full cursor-policy sync in the
+    // same invocation frame.
+    if (event.target === cursorChatInput) return;
+    if (!eventTargetsTypingInput(event)) return;
+    if (cursorChatPending()) {
+      // A new focus target owns the keyboard now. Do not let an earlier,
+      // not-yet-rendered "/" intent appear on a later pointer move.
+      cancelPendingCursorChat();
+    }
+    syncTypingCursorDocument(frameDocument, true);
+  }
+
+  function handleTypingCursorFocusOut(frameDocument) {
+    queueMicrotask(() => {
+      syncTypingCursorDocument(
+        frameDocument,
+        documentHasTypingFocus(frameDocument)
+      );
+    });
+  }
+
   function ensureCustomCursorDocumentStyle(policy) {
     const frameDocument = policy.document;
     const styleParent = frameDocument.head || frameDocument.documentElement;
@@ -1251,6 +1371,7 @@ const Social = (() => {
   function disposeCustomCursorShadowRoot(policy, shadowRoot, observer) {
     observer?.disconnect();
     shadowRoot.host?.removeAttribute(CUSTOM_CURSOR_ACTIVE_ATTR);
+    shadowRoot.host?.removeAttribute(CUSTOM_CURSOR_DOM_ATTR);
     for (const style of shadowRoot.querySelectorAll(
       `style[${CUSTOM_CURSOR_SHADOW_STYLE_ATTR}]`
     )) {
@@ -1291,6 +1412,7 @@ const Social = (() => {
     }
 
     host.toggleAttribute(CUSTOM_CURSOR_ACTIVE_ATTR, policy.active);
+    host.toggleAttribute(CUSTOM_CURSOR_DOM_ATTR, policy.domFollower);
     ensureCustomCursorShadowStyle(policy, shadowRoot);
     if (policy.shadowObservers.has(shadowRoot)) return;
 
@@ -1379,13 +1501,25 @@ const Social = (() => {
       documentObserver: null,
       shadowObservers: new Map(),
       attachShadowPatch: null,
+      focusInHandler: null,
+      focusOutHandler: null,
       active: false,
+      domFollower: false,
       disposed: false,
     };
     customCursorPolicies.set(frameDocument, policy);
     ensureCustomCursorDocumentStyle(policy);
     patchCustomCursorShadowCreation(policy);
     scanCustomCursorNode(policy, observedRoot);
+    policy.focusInHandler = (event) =>
+      handleTypingCursorFocusIn(frameDocument, event);
+    policy.focusOutHandler = () =>
+      handleTypingCursorFocusOut(frameDocument);
+    frameDocument.addEventListener('focusin', policy.focusInHandler, true);
+    frameDocument.addEventListener('focusout', policy.focusOutHandler, true);
+    if (documentHasTypingFocus(frameDocument)) {
+      syncTypingCursorDocument(frameDocument, true);
+    }
 
     const FrameMutationObserver =
       observedRoot.ownerDocument?.defaultView?.MutationObserver;
@@ -1414,14 +1548,21 @@ const Social = (() => {
     return policy;
   }
 
-  function setCustomCursorPolicyMode(policy, active) {
+  function setCustomCursorPolicyMode(policy, active, domFollower) {
+    if (policy.active === active && policy.domFollower === domFollower) return;
     policy.active = active;
+    policy.domFollower = domFollower;
     policy.document.documentElement?.toggleAttribute(
       CUSTOM_CURSOR_ACTIVE_ATTR,
       active
     );
+    policy.document.documentElement?.toggleAttribute(
+      CUSTOM_CURSOR_DOM_ATTR,
+      domFollower
+    );
     for (const shadowRoot of policy.shadowObservers.keys()) {
       shadowRoot.host?.toggleAttribute(CUSTOM_CURSOR_ACTIVE_ATTR, active);
+      shadowRoot.host?.toggleAttribute(CUSTOM_CURSOR_DOM_ATTR, domFollower);
     }
   }
 
@@ -1439,7 +1580,28 @@ const Social = (() => {
   function disposeCustomCursorPolicy(policy) {
     policy.disposed = true;
     policy.documentObserver?.disconnect();
+    if (policy.focusInHandler) {
+      policy.document.removeEventListener(
+        'focusin',
+        policy.focusInHandler,
+        true
+      );
+    }
+    if (policy.focusOutHandler) {
+      policy.document.removeEventListener(
+        'focusout',
+        policy.focusOutHandler,
+        true
+      );
+    }
+    const hadTypingFocus = customCursorEditableDocuments.delete(policy.document);
+    if (hadTypingFocus && !cursorDomRequested()) {
+      cursorDomHandoffPending =
+        finePointer.matches && cursorPointValid;
+      cursorDomHandoffReady = false;
+    }
     policy.document.documentElement?.removeAttribute(CUSTOM_CURSOR_ACTIVE_ATTR);
+    policy.document.documentElement?.removeAttribute(CUSTOM_CURSOR_DOM_ATTR);
     for (const [shadowRoot, observer] of [...policy.shadowObservers]) {
       disposeCustomCursorShadowRoot(policy, shadowRoot, observer);
     }
@@ -1458,6 +1620,10 @@ const Social = (() => {
       }
     }
     customCursorPolicies.delete(policy.document);
+    if (hadTypingFocus) {
+      syncCursorChatVisibility();
+      if (cursorDomVisible()) scheduleCursorChatRender();
+    }
   }
 
   function releaseCustomCursorFrame(frame) {
@@ -1472,6 +1638,7 @@ const Social = (() => {
 
   function syncCustomCursor(frame = null) {
     const policyActive = finePointer.matches;
+    const domFollower = cursorDomVisible();
     if (!customCursorRootStyled) {
       document.documentElement.style.setProperty(
         '--site-custom-cursor',
@@ -1479,13 +1646,24 @@ const Social = (() => {
       );
       customCursorRootStyled = true;
     }
-    document.documentElement.classList.toggle('has-custom-cursor', policyActive);
+    const modeChanged =
+      customCursorRootActive !== policyActive ||
+      customCursorRootDomFollower !== domFollower;
+    if (modeChanged) {
+      customCursorRootActive = policyActive;
+      customCursorRootDomFollower = domFollower;
+      document.documentElement.classList.toggle(
+        'has-custom-cursor',
+        policyActive
+      );
+      document.documentElement.classList.toggle('has-dom-cursor', domFollower);
 
-    for (const policy of [...customCursorPolicies.values()]) {
-      if (!customCursorPolicyIsConnected(policy)) {
-        disposeCustomCursorPolicy(policy);
-      } else {
-        setCustomCursorPolicyMode(policy, policyActive);
+      for (const policy of [...customCursorPolicies.values()]) {
+        if (!customCursorPolicyIsConnected(policy)) {
+          disposeCustomCursorPolicy(policy);
+        } else {
+          setCustomCursorPolicyMode(policy, policyActive, domFollower);
+        }
       }
     }
 
@@ -1495,7 +1673,11 @@ const Social = (() => {
         if (!frameDocument?.documentElement) return;
         const policy = installCustomCursorPolicy(frameDocument);
         if (!policy) return;
-        setCustomCursorPolicyMode(policy, policyActive);
+        setCustomCursorPolicyMode(
+          policy,
+          policyActive,
+          cursorDomVisible()
+        );
       } catch {
         /* cross-origin frames keep their own cursor policy */
       }
@@ -1510,7 +1692,8 @@ const Social = (() => {
     cursorChatEl.inert = true;
     cursorChatEl.setAttribute('aria-hidden', 'true');
     cursorChatEl.innerHTML =
-      `<div class="cursor-chat-bubble cursor-chat-local-bubble">
+      `<div class="site-cursor" aria-hidden="true">${CUSTOM_CURSOR_SVG}</div>
+      <div class="cursor-chat-bubble cursor-chat-local-bubble">
         <input class="cursor-chat-input" type="text" placeholder="Say something"
           aria-label="Cursor chat message" autocomplete="off" autocorrect="off"
           autocapitalize="off" spellcheck="false" tabindex="-1" />
@@ -1534,7 +1717,7 @@ const Social = (() => {
             shouldPosition = true;
             continue;
           }
-          if (entry.target !== cursorChatBubble || entry.target.hidden) continue;
+          if (entry.target !== cursorChatBubble) continue;
           const borderBox = Array.isArray(entry.borderBoxSize)
             ? entry.borderBoxSize[0]
             : entry.borderBoxSize;
@@ -1542,8 +1725,8 @@ const Social = (() => {
           const borderHeight = Number(borderBox?.blockSize);
           const contentWidth = Number(entry.contentRect?.width);
           const contentHeight = Number(entry.contentRect?.height);
-          const width = borderWidth > 0 ? borderWidth : contentWidth + 28;
-          const height = borderHeight > 0 ? borderHeight : contentHeight + 16;
+          const width = borderWidth > 0 ? borderWidth : contentWidth + 26;
+          const height = borderHeight > 0 ? borderHeight : contentHeight + 14;
           if (!(width > 0 && height > 0)) continue;
           cursorChatWidth = width;
           cursorChatHeight = height;
@@ -1605,6 +1788,56 @@ const Social = (() => {
     });
   }
 
+  function cancelPendingCursorChat(owner) {
+    if (
+      arguments.length > 0 &&
+      cursorChatPendingOwner !== owner
+    ) {
+      return false;
+    }
+    if (cursorChatBootFrame !== null) {
+      cancelAnimationFrame(cursorChatBootFrame);
+      cursorChatBootFrame = null;
+    }
+    cursorChatAwaitingBoot = false;
+    cursorChatPendingPreferRight = false;
+    cursorChatPendingOwner = null;
+    return true;
+  }
+
+  function cursorChatPending() {
+    return cursorChatAwaitingBoot;
+  }
+
+  function resolvePendingCursorChat() {
+    if (!cursorChatPending() || cursorChatOpen) return;
+    cursorChatAwaitingBoot = bootInProgress();
+    if (cursorChatPending()) return;
+    const preferRightUntilFit = cursorChatPendingPreferRight;
+    openCursorChat({ preferRightUntilFit });
+  }
+
+  function schedulePendingCursorChatResolve() {
+    if (!cursorChatPending() || cursorChatBootFrame !== null) return;
+    cursorChatBootFrame = requestAnimationFrame(() => {
+      cursorChatBootFrame = null;
+      // Boot completion also reveals the bottom composer. Read its final box
+      // in a clean frame before Cursor Chat performs any visibility writes.
+      refreshCursorChatLayout();
+      resolvePendingCursorChat();
+    });
+  }
+
+  function placeCursorChatFallback() {
+    const viewport = window.visualViewport;
+    const width = viewport?.width || innerWidth;
+    const height = viewport?.height || innerHeight;
+    cursorPoint.x = Math.round(width / 2);
+    cursorPoint.y = Math.round(height / 2);
+    cursorPointValid = true;
+    cursorPointProvisional = true;
+  }
+
   function syncCursorChatMeasureFont() {
     if (!cursorChatInput || !cursorChatMeasureContext) return;
     const style = getComputedStyle(cursorChatInput);
@@ -1614,7 +1847,7 @@ const Social = (() => {
     cursorChatMeasureContext.fontKerning = 'normal';
   }
 
-  function measureCursorChat() {
+  function measureCursorChat(schedule = true) {
     if (!cursorChatOpen || !cursorChatInput) return;
     const sample = cursorChatInput.value || cursorChatInput.placeholder;
     const measuredWidth = cursorChatMeasureContext
@@ -1623,7 +1856,7 @@ const Social = (() => {
     const textWidth = Math.ceil(measuredWidth);
     const maxInputWidth = Math.max(
       CURSOR_CHAT_MIN_INPUT_PX,
-      Math.min(300, cursorChatViewportWidth - CURSOR_CHAT_EDGE * 2 - 28)
+      Math.min(300, cursorChatViewportWidth - CURSOR_CHAT_EDGE * 2 - 26)
     );
     const minInputWidth = Math.min(CURSOR_CHAT_MIN_INPUT_PX, maxInputWidth);
     cursorChatPendingInputWidth = clamp(
@@ -1631,13 +1864,13 @@ const Social = (() => {
       minInputWidth,
       maxInputWidth
     );
-    cursorChatWidth = cursorChatPendingInputWidth + 28;
-    cursorChatHeight = 35;
-    scheduleCursorChatRender();
+    cursorChatWidth = cursorChatPendingInputWidth + 26;
+    cursorChatHeight = 33;
+    if (schedule) scheduleCursorChatRender();
   }
 
   function scheduleCursorChatRender() {
-    if (!cursorChatOpen || cursorChatRenderFrame !== null) return;
+    if (!cursorFollowerVisible() || cursorChatRenderFrame !== null) return;
     cursorChatRenderFrame = requestAnimationFrame(() => {
       cursorChatRenderFrame = null;
       renderCursorChat();
@@ -1645,8 +1878,12 @@ const Social = (() => {
   }
 
   function renderCursorChat() {
-    if (!cursorChatOpen || !cursorChatInput) return;
-    if (cursorChatPendingInputWidth !== cursorChatInputWidth) {
+    if (!cursorFollowerVisible() || !cursorChatEl) return;
+    if (
+      cursorChatOpen &&
+      cursorChatInput &&
+      cursorChatPendingInputWidth !== cursorChatInputWidth
+    ) {
       cursorChatInputWidth = cursorChatPendingInputWidth;
       cursorChatInput.style.setProperty(
         '--cursor-chat-input-width',
@@ -1654,7 +1891,17 @@ const Social = (() => {
       );
     }
     positionCursorFollower();
-    positionCursorChat();
+    if (cursorChatOpen) positionCursorChat();
+    if (
+      cursorDomHandoffPending &&
+      cursorDomHandoffReady &&
+      !cursorDomRequested()
+    ) {
+      cursorDomHandoffPending = false;
+      cursorDomHandoffReady = false;
+      syncCursorChatVisibility();
+      syncCustomCursor();
+    }
   }
 
   function renderCursorChatNow() {
@@ -1688,6 +1935,7 @@ const Social = (() => {
       const shouldMeasure = cursorChatLayoutNeedsMeasure;
       cursorChatLayoutNeedsMeasure = false;
       refreshCursorChatLayout();
+      if (cursorPointProvisional) placeCursorChatFallback();
       if (shouldMeasure) measureCursorChat();
       scheduleCursorChatRender();
     });
@@ -1697,6 +1945,9 @@ const Social = (() => {
     if (!cursorChatOpen || !cursorChatEl) return;
     const width = cursorChatWidth;
     const height = cursorChatHeight;
+    const gapY = cursorChatOpenedFromHint
+      ? CURSOR_CHAT_HINT_GAP_Y
+      : CURSOR_CHAT_GAP_Y;
     const bottomEdge = Math.max(
       CURSOR_CHAT_EDGE + height,
       Math.min(
@@ -1719,22 +1970,27 @@ const Social = (() => {
       // only happens once the current placement is meaningfully clipped and
       // the opposite side can fit, preventing 1px pointer jitter from making
       // the input bounce back and forth.
-      if (
-        cursorChatSideX === 'right' &&
-        rightOverflow >= CURSOR_CHAT_FLIP_HYSTERESIS &&
-        leftFits
-      ) {
-        cursorChatSideX = 'left';
-      } else if (
-        cursorChatSideX === 'left' &&
-        leftOverflow >= CURSOR_CHAT_FLIP_HYSTERESIS &&
-        rightFits
-      ) {
-        cursorChatSideX = 'right';
+      if (cursorChatPreferRightUntilFit && rightFits) {
+        cursorChatPreferRightUntilFit = false;
+      }
+      if (!cursorChatPreferRightUntilFit) {
+        if (
+          cursorChatSideX === 'right' &&
+          rightOverflow >= CURSOR_CHAT_FLIP_HYSTERESIS &&
+          leftFits
+        ) {
+          cursorChatSideX = 'left';
+        } else if (
+          cursorChatSideX === 'left' &&
+          leftOverflow >= CURSOR_CHAT_FLIP_HYSTERESIS &&
+          rightFits
+        ) {
+          cursorChatSideX = 'right';
+        }
       }
 
-      const bottomY = cursorPoint.y + CURSOR_CHAT_GAP_Y;
-      const topY = cursorPoint.y - CURSOR_CHAT_GAP_Y - height;
+      const bottomY = cursorPoint.y + gapY;
+      const topY = cursorPoint.y - gapY - height;
       const bottomFits = bottomY + height <= bottomEdge;
       const topFits = topY >= CURSOR_CHAT_EDGE;
       const bottomOverflow = bottomY + height - bottomEdge;
@@ -1760,8 +2016,8 @@ const Social = (() => {
         : cursorPoint.x - CURSOR_CHAT_GAP_X - width;
     const idealY =
       cursorChatSideY === 'bottom'
-        ? cursorPoint.y + CURSOR_CHAT_GAP_Y
-        : cursorPoint.y - CURSOR_CHAT_GAP_Y - height;
+        ? cursorPoint.y + gapY
+        : cursorPoint.y - gapY - height;
     const x = clamp(
       idealX,
       CURSOR_CHAT_EDGE,
@@ -1784,7 +2040,7 @@ const Social = (() => {
     if (
       !cursorPointValid ||
       !cursorChatEl ||
-      !cursorChatOpen
+      !cursorFollowerVisible()
     ) {
       return;
     }
@@ -1799,23 +2055,47 @@ const Social = (() => {
 
   function syncCursorChatVisibility() {
     if (!cursorChatEl) return;
-    const visible =
-      finePointer.matches && cursorPointValid && cursorChatOpen;
+    const visible = cursorFollowerVisible();
+    const domCursorVisible = cursorDomVisible();
     cursorChatEl.classList.toggle('is-active', visible);
-    cursorChatEl.inert = !visible;
-    cursorChatEl.setAttribute('aria-hidden', String(!visible));
+    cursorChatEl.classList.toggle('is-dom-cursor-active', domCursorVisible);
+    cursorChatEl.classList.toggle('is-chat-active', cursorChatOpen);
+    cursorChatEl.inert = !cursorChatOpen;
+    cursorChatEl.setAttribute('aria-hidden', String(!cursorChatOpen));
   }
 
-  function trackPointer(x, y) {
+  function trackPointer(x, y, activatePendingChat = true) {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    const hadPendingChat = cursorChatPending();
+    const shouldOpenPendingChat =
+      activatePendingChat && hadPendingChat && !cursorChatOpen;
+    if (hadPendingChat) {
+      if (!activatePendingChat) {
+        cancelPendingCursorChat();
+      }
+    }
+    const wasFollowerVisible = cursorFollowerVisible();
     cursorPoint.x = x;
     cursorPoint.y = y;
     cursorPointValid = true;
+    cursorPointProvisional = false;
 
-    // The platform cursor keeps using the CSS SVG cursor plane. Only the
-    // bubble is DOM-driven, and high-polling pointer events collapse into the
-    // latest point so each display frame performs at most one style write.
-    if (cursorChatOpen) scheduleCursorChatRender();
+    // Cursor Chat and ordinary focused text inputs use the DOM arrow because
+    // operating systems can suppress the native cursor while typing. Either
+    // way, high-polling events collapse into one transform write per frame.
+    if (cursorFollowerVisible()) {
+      if (cursorDomHandoffPending && !cursorDomRequested()) {
+        cursorDomHandoffReady = true;
+      }
+      if (!wasFollowerVisible) {
+        syncCursorChatVisibility();
+        renderCursorChatNow();
+        syncCustomCursor();
+      } else {
+        scheduleCursorChatRender();
+      }
+    }
+    if (shouldOpenPendingChat) resolvePendingCursorChat();
   }
 
   function cancelCursorChatSync() {
@@ -1880,6 +2160,20 @@ const Social = (() => {
     }, CURSOR_CHAT_TTL_MS);
   }
 
+  function releaseCursorChatCursor() {
+    const shouldHandoff =
+      cursorChatCursorActive &&
+      customCursorEditableDocuments.size === 0 &&
+      finePointer.matches &&
+      cursorPointValid;
+    cursorChatCursorActive = false;
+    if (shouldHandoff) {
+      cursorDomHandoffPending = true;
+      cursorDomHandoffReady = false;
+    }
+    return shouldHandoff;
+  }
+
   function reviveCursorChat() {
     if (!cursorChatFading) return;
     clearTimeout(cursorChatFadeTimer);
@@ -1889,10 +2183,15 @@ const Social = (() => {
   }
 
   function finishCursorChat() {
+    const chatCursorHandedOff = releaseCursorChatCursor();
     clearTimeout(cursorChatIdleTimer);
     clearTimeout(cursorChatFadeTimer);
     cancelCursorChatSync();
     cancelCursorChatRender();
+    if (cursorChatRefocusFrame !== null) {
+      cancelAnimationFrame(cursorChatRefocusFrame);
+      cursorChatRefocusFrame = null;
+    }
     cursorChatIdleTimer = null;
     cursorChatFadeTimer = null;
     cursorChatOpen = false;
@@ -1903,28 +2202,37 @@ const Social = (() => {
     if (cursorChatInput) cursorChatInput.value = '';
     cursorChatSession = null;
     cursorChatLastSentText = null;
+    cursorChatPreferRightUntilFit = false;
+    cursorChatOpenedFromHint = false;
+    if (!cursorDomRequested() && !chatCursorHandedOff) {
+      // With no valid pointer to align, release the follower immediately.
+      // Otherwise the next real pointer frame performs a seamless handoff.
+      cursorDomHandoffPending = false;
+      cursorDomHandoffReady = false;
+    }
     chatHint?.setAttribute('aria-expanded', 'false');
     if (chatHint) {
       chatHint.title = 'Open cursor chat';
       chatHint.setAttribute('aria-label', 'Open cursor chat');
     }
     syncCursorChatVisibility();
+    if (cursorFollowerVisible()) renderCursorChatNow();
+    syncCustomCursor();
   }
 
   function beginCursorChatFade() {
-    if (!cursorChatOpen || cursorChatFading) return;
-    clearTimeout(cursorChatIdleTimer);
-    cursorChatIdleTimer = null;
-    cancelCursorChatSync();
-    sendCursorChatNow('', true);
+    if (!cursorChatOpen || cursorChatFading || cursorChatComposing) return;
     cursorChatFading = true;
     cursorChatBubble.classList.add('is-out');
     const session = cursorChatSession;
-    cursorChatFadeTimer = setTimeout(() => {
+    const finishFade = () => {
       if (cursorChatSession === session && cursorChatFading) {
+        cancelCursorChatSync();
+        sendCursorChatNow('', true);
         finishCursorChat();
       }
-    }, CURSOR_CHAT_FADE_MS);
+    };
+    cursorChatFadeTimer = setTimeout(finishFade, CURSOR_CHAT_FADE_MS);
   }
 
   function closeCursorChat() {
@@ -1932,6 +2240,7 @@ const Social = (() => {
   }
 
   function closeCursorChatImmediately() {
+    cancelPendingCursorChat();
     if (!cursorChatOpen) return;
     if (cursorChatOpen) {
       cancelCursorChatSync();
@@ -1942,15 +2251,27 @@ const Social = (() => {
 
   function openCursorChat(point) {
     if (!finePointer.matches) return false;
+    const preferRightUntilFit = Boolean(point?.preferRightUntilFit);
+    const pendingOwner = point?.pendingOwner ?? null;
+    const requiresPointer =
+      point?.requireFreshPointer === true || !cursorPointValid;
+    if (cursorChatOpen && requiresPointer) closeCursorChatImmediately();
     if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) {
-      trackPointer(point.x, point.y);
-    } else if (!cursorPointValid) {
-      // A keyboard-only invocation has no pointer event to anchor to, so use
-      // a deterministic center point until the next real movement arrives.
-      cursorPoint.x = innerWidth / 2;
-      cursorPoint.y = innerHeight / 2;
-      cursorPointValid = true;
+      cancelPendingCursorChat();
+      trackPointer(point.x, point.y, false);
+    } else if (requiresPointer) {
+      // Keyboard events do not expose pointer coordinates. A deterministic
+      // center anchor keeps "/" reliable; the next real sample replaces it
+      // without animation or layout work.
+      placeCursorChatFallback();
     }
+    cursorChatAwaitingBoot = bootInProgress();
+    if (cursorChatPending()) {
+      cursorChatPendingPreferRight = preferRightUntilFit;
+      cursorChatPendingOwner = pendingOwner;
+      return true;
+    }
+    cancelPendingCursorChat();
     if (cursorChatOpen) closeCursorChatImmediately();
     ensureCursorChat();
 
@@ -1959,20 +2280,28 @@ const Social = (() => {
     cursorChatLastSentText = null;
     cursorChatSideX = 'right';
     cursorChatSideY = 'bottom';
+    cursorChatPreferRightUntilFit = preferRightUntilFit;
+    cursorChatOpenedFromHint = cursorChatPreferRightUntilFit;
     cursorFollowerRenderedX = Number.NaN;
     cursorFollowerRenderedY = Number.NaN;
     cursorChatOffsetX = Number.NaN;
     cursorChatOffsetY = Number.NaN;
     cursorChatOpen = true;
+    cursorChatCursorActive = true;
     cursorChatFading = false;
     cursorChatComposing = false;
+    cursorDomHandoffPending = false;
+    cursorDomHandoffReady = false;
     cursorChatInput.value = '';
     cursorChatBubble.classList.remove('is-out');
-    refreshCursorChatLayout();
-    measureCursorChat();
-    renderCursorChatNow();
+    // The follower and bubble are layout-resident, transparent compositor
+    // layers from boot. Opening only flips visibility and transform state.
     syncCursorChatVisibility();
+    measureCursorChat(false);
+    renderCursorChatNow();
+    syncCustomCursor();
     cursorChatInput.focus({ preventScroll: true });
+    scheduleCursorChatExpiry();
     chatHint?.setAttribute('aria-expanded', 'true');
     if (chatHint) {
       chatHint.title = 'Restart cursor chat';
@@ -1982,13 +2311,41 @@ const Social = (() => {
   }
 
   function isCursorChatOpen() {
-    return cursorChatOpen;
+    return cursorChatOpen || cursorChatPending();
+  }
+
+  function consumeCursorChatBootstrap() {
+    const bootstrap = window.__cursorChatBootstrap;
+    if (!bootstrap) return;
+
+    // Read the latest values before removing the capture listeners. JavaScript
+    // runs this handoff atomically, so an input event belongs to exactly one
+    // side of the bridge.
+    const point = bootstrap.point;
+    const slashRequested = bootstrap.slash === true;
+    bootstrap.slash = false;
+    bootstrap.dispose?.();
+    try {
+      delete window.__cursorChatBootstrap;
+    } catch {
+      window.__cursorChatBootstrap = null;
+    }
+
+    if (Number.isFinite(point?.x) && Number.isFinite(point?.y)) {
+      trackPointer(point.x, point.y, false);
+    }
+    if (slashRequested && !documentHasTypingFocus(document)) {
+      openCursorChat();
+    }
   }
 
   function eventTargetsEditable(event) {
-    const path = typeof event.composedPath === 'function' ? event.composedPath() : [event.target];
+    const path =
+      typeof event.composedPath === 'function'
+        ? event.composedPath()
+        : [event.target];
     return path.some((node) => {
-      if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
+      if (!node || node.nodeType !== 1) return false;
       return (
         node.tagName === 'INPUT' ||
         node.tagName === 'TEXTAREA' ||
@@ -1998,6 +2355,78 @@ const Social = (() => {
     });
   }
 
+  function eventTargetsTypingInput(event) {
+    const path =
+      typeof event.composedPath === 'function'
+        ? event.composedPath()
+        : [event.target];
+    return path.some(elementUsesTypingCursor);
+  }
+
+  function resetCursorChatForPageExit() {
+    clearTimeout(cursorChatWindowBlurTimer);
+    cursorChatWindowBlurTimer = null;
+    if (cursorChatRefocusFrame !== null) {
+      cancelAnimationFrame(cursorChatRefocusFrame);
+      cursorChatRefocusFrame = null;
+    }
+    const wasOpen = cursorChatOpen;
+    cancelPendingCursorChat();
+    cursorPointValid = false;
+    cursorPointProvisional = false;
+    cursorDomHandoffPending = false;
+    cursorDomHandoffReady = false;
+    if (wasOpen) {
+      closeCursorChatImmediately();
+      return;
+    }
+    syncCursorChatVisibility();
+    syncCustomCursor();
+  }
+
+  function cancelCursorChatWindowBlur() {
+    clearTimeout(cursorChatWindowBlurTimer);
+    cursorChatWindowBlurTimer = null;
+  }
+
+  function handleCursorChatWindowFocus() {
+    cancelCursorChatWindowBlur();
+    if (!cursorChatOpen || cursorChatRefocusFrame !== null) return;
+    cursorChatRefocusFrame = requestAnimationFrame(() => {
+      cursorChatRefocusFrame = null;
+      if (
+        cursorChatOpen &&
+        document.hasFocus() &&
+        document.activeElement !== cursorChatInput
+      ) {
+        cursorChatInput.focus({ preventScroll: true });
+      }
+    });
+  }
+
+  function scheduleCursorChatWindowBlur() {
+    cancelCursorChatWindowBlur();
+    cursorChatWindowBlurTimer = setTimeout(() => {
+      cursorChatWindowBlurTimer = null;
+      // Same-origin iframe focus transiently blurs the parent Window while the
+      // top document still owns focus. Let that sequence settle before treating
+      // it as a real tab/app exit.
+      if (document.hasFocus()) return;
+      resetCursorChatForPageExit();
+    }, CURSOR_CHAT_BLUR_SETTLE_MS);
+  }
+
+  document.addEventListener(
+    'focusin',
+    (event) => handleTypingCursorFocusIn(document, event),
+    true
+  );
+  document.addEventListener(
+    'focusout',
+    () => handleTypingCursorFocusOut(document),
+    true
+  );
+
   addEventListener(
     'pointermove',
     (event) => {
@@ -2005,6 +2434,19 @@ const Social = (() => {
       const samples = event.getCoalescedEvents?.();
       const latest = samples?.length ? samples[samples.length - 1] : event;
       trackPointer(latest.clientX, latest.clientY);
+    },
+    { passive: true }
+  );
+  document.documentElement.addEventListener(
+    'pointerover',
+    (event) => {
+      // pointerover is the most reliable first sample after a fresh document
+      // becomes interactive. Once a valid point exists, this path is inert.
+      if (cursorPointValid) return;
+      if (event.pointerType && event.pointerType !== 'mouse' && event.pointerType !== 'pen') {
+        return;
+      }
+      trackPointer(event.clientX, event.clientY);
     },
     { passive: true }
   );
@@ -2025,15 +2467,29 @@ const Social = (() => {
         return;
       }
       if (event.relatedTarget !== null) return;
+      cancelPendingCursorChat();
       cursorPointValid = false;
+      cursorPointProvisional = false;
+      cursorDomHandoffPending = false;
+      cursorDomHandoffReady = false;
       closeCursorChatImmediately();
+      syncCursorChatVisibility();
+      syncCustomCursor();
     },
     { passive: true }
   );
   document.addEventListener(
     'pointerdown',
     (event) => {
-      trackPointer(event.clientX, event.clientY);
+      if (
+        !event.pointerType ||
+        event.pointerType === 'mouse' ||
+        event.pointerType === 'pen'
+      ) {
+        trackPointer(event.clientX, event.clientY, false);
+      } else {
+        cancelPendingCursorChat();
+      }
       if (cursorChatOpen) closeCursorChat();
     },
     { capture: true, passive: true }
@@ -2041,7 +2497,7 @@ const Social = (() => {
   addEventListener('keydown', (event) => {
     if (
       event.key === 'Escape' &&
-      cursorChatOpen &&
+      (cursorChatOpen || cursorChatPending()) &&
       !event.defaultPrevented &&
       !cursorChatComposing &&
       !event.isComposing &&
@@ -2073,6 +2529,7 @@ const Social = (() => {
     () => scheduleCursorChatLayoutRefresh(true),
     { passive: true }
   );
+  addEventListener('boot:done', schedulePendingCursorChatResolve);
   window.visualViewport?.addEventListener(
     'resize',
     () => scheduleCursorChatLayoutRefresh(true),
@@ -2085,17 +2542,18 @@ const Social = (() => {
   );
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
-      cursorPointValid = false;
-      closeCursorChatImmediately();
+      resetCursorChatForPageExit();
     }
   });
-  addEventListener('blur', () => {
-    cursorPointValid = false;
-    closeCursorChatImmediately();
-  });
+  addEventListener('blur', scheduleCursorChatWindowBlur);
+  addEventListener('focus', handleCursorChatWindowFocus);
   finePointer.addEventListener('change', (event) => {
     if (!event.matches) {
+      cancelPendingCursorChat();
       cursorPointValid = false;
+      cursorPointProvisional = false;
+      cursorDomHandoffPending = false;
+      cursorDomHandoffReady = false;
       closeCursorChatImmediately();
     }
     syncCustomCursor();
@@ -2106,11 +2564,19 @@ const Social = (() => {
   // the topbar's aria-controls target available before first interaction.
   ensureCursorChat();
   refreshCursorChatLayout();
+  if (documentHasTypingFocus(document)) {
+    syncTypingCursorDocument(document, true);
+  }
+  consumeCursorChatBootstrap();
   syncCustomCursor();
 
   // Topbar hint chip: another way in, for people who never guess "/".
   chatHint?.addEventListener('click', (event) => {
-    openCursorChat({ x: event.clientX, y: event.clientY });
+    openCursorChat({
+      x: event.clientX,
+      y: event.clientY,
+      preferRightUntilFit: true,
+    });
   });
 
   // Bullet chat is persistent chrome after boot, but it must not peek around
@@ -2136,7 +2602,10 @@ const Social = (() => {
     // the root class keeps this component fail-open even if an older cached
     // document or a partially loaded boot script only clears the state.
     socialChromeBootObserver = new MutationObserver(() => {
-      if (!bootInProgress()) revealSocialChrome(false);
+      if (!bootInProgress()) {
+        schedulePendingCursorChatResolve();
+        revealSocialChrome(false);
+      }
     });
     try {
       socialChromeBootObserver.observe(document.documentElement, {
@@ -2176,6 +2645,7 @@ const Social = (() => {
     },
     openCursorChat,
     closeCursorChat,
+    cancelCursorChatPending: cancelPendingCursorChat,
     trackPointer,
     syncCustomCursor,
     releaseCustomCursorFrame,

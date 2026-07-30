@@ -544,6 +544,7 @@
       disposePlaygroundFrameBridge();
 
       let framePointer = null;
+      const chatPendingOwner = {};
       let disposed = false;
       let geometryFrame = null;
       let transitionGeometryFrame = null;
@@ -572,6 +573,7 @@
             frame.contentDocument !== frameDocument
           ) {
             geometry.valid = false;
+            framePointer = null;
             return false;
           }
           const rect = frame.getBoundingClientRect();
@@ -588,6 +590,7 @@
             !Number.isFinite(scaleY)
           ) {
             geometry.valid = false;
+            framePointer = null;
             return false;
           }
           geometry.left = rect.left;
@@ -595,9 +598,13 @@
           geometry.scaleX = scaleX;
           geometry.scaleY = scaleY;
           geometry.valid = true;
+          // The iframe moved under a stationary system pointer. Its previous
+          // local coordinate no longer identifies the real viewport point.
+          framePointer = null;
           return true;
         } catch {
           geometry.valid = false;
+          framePointer = null;
           return false;
         }
       };
@@ -656,6 +663,7 @@
         dispose() {
           if (disposed) return;
           disposed = true;
+          Social.cancelCursorChatPending?.(chatPendingOwner);
           geometry.valid = false;
           framePointer = null;
           if (geometryFrame !== null) cancelAnimationFrame(geometryFrame);
@@ -696,17 +704,32 @@
               node.isContentEditable)
         );
       };
+      const isFinePointerEvent = (event) =>
+        !event.pointerType ||
+        event.pointerType === 'mouse' ||
+        event.pointerType === 'pen';
 
       const handlePointerMove = (e) => {
+        if (!isFinePointerEvent(e)) return;
         const point = parentPoint(e);
         if (!point) return;
         Social.trackPointer?.(point.x, point.y);
         presence?.pointerMove?.(point.x, point.y);
       };
+      const handlePointerArrival = (e) => {
+        if (!framePointer) handlePointerMove(e);
+      };
+      const handlePointerExit = (e) => {
+        if (!isFinePointerEvent(e) || e.relatedTarget !== null) return;
+        framePointer = null;
+      };
+      const handleFrameBlur = () => {
+        framePointer = null;
+      };
       const handlePointerDown = (e) => {
-        const point = parentPoint(e);
+        const point = isFinePointerEvent(e) ? parentPoint(e) : null;
         if (point) {
-          Social.trackPointer?.(point.x, point.y);
+          Social.trackPointer?.(point.x, point.y, false);
           presence?.pointerMove?.(point.x, point.y);
         }
         if (Social.isCursorChatOpen?.()) Social.closeCursorChat?.();
@@ -740,10 +763,28 @@
         ) {
           e.preventDefault();
           e.stopPropagation();
-          Social.openCursorChat?.(framePointer);
+          Social.openCursorChat?.(
+            framePointer
+              ? {
+                  x: framePointer.x,
+                  y: framePointer.y,
+                  pendingOwner: chatPendingOwner,
+                }
+              : {
+                  requireFreshPointer: true,
+                  pendingOwner: chatPendingOwner,
+                }
+          );
           return;
         }
-        if (e.key !== 'Escape' || e.defaultPrevented) return;
+        if (
+          e.key !== 'Escape' ||
+          e.defaultPrevented ||
+          e.isComposing ||
+          e.keyCode === 229
+        ) {
+          return;
+        }
         if (Social.isCursorChatOpen?.()) {
           e.preventDefault();
           e.stopPropagation();
@@ -771,8 +812,26 @@
 
       listen(
         frameWindow,
+        'pointerover',
+        handlePointerArrival,
+        { passive: true }
+      );
+      listen(
+        frameWindow,
+        'pointerenter',
+        handlePointerArrival,
+        { passive: true }
+      );
+      listen(
+        frameWindow,
         'pointermove',
         handlePointerMove,
+        { passive: true }
+      );
+      listen(
+        frameWindow,
+        'pointerout',
+        handlePointerExit,
         { passive: true }
       );
       listen(
@@ -782,6 +841,7 @@
         { capture: true, passive: true }
       );
       listen(frameWindow, 'pagehide', handlePageHide);
+      listen(frameWindow, 'blur', handleFrameBlur);
       listen(frameWindow, 'keydown', handleKeyDown);
       listen(frameWindow, 'resize', scheduleGeometryRefresh, { passive: true });
       listen(frameWindow, 'scroll', scheduleGeometryRefresh, { passive: true });

@@ -34,7 +34,7 @@ const Presence = (() => {
       getComputedStyle(document.documentElement).getPropertyValue(
         '--duration-cursor-chat'
       )
-    ) || 320) + 30;
+    ) || 2000) + 30;
   const COLORS = ['orange', 'violet', 'green', 'pink', 'blue', 'amber'];
   const LIKE_CARDS = new Set([
     'status-indicator',
@@ -239,7 +239,7 @@ const Presence = (() => {
     }
 
     get hasChat() {
-      return !this.chatEl.hidden && !this.chatEl.classList.contains('is-out');
+      return !this.chatEl.hidden;
     }
 
     setChat({ text, rev, ttlMs, a, fx, fy }) {
@@ -254,7 +254,7 @@ const Presence = (() => {
       // slot is allocated. Do not repeat the Unicode scan in the render path.
       const safeText = text;
       if (!safeText || safeText.trim() === '') {
-        this.clearChat();
+        this.clearChat(true);
         return targetChanged;
       }
 
@@ -262,9 +262,7 @@ const Presence = (() => {
       this.chatRemovalTimer = null;
       if (this.chatText.textContent !== safeText) this.chatText.textContent = safeText;
       if (this.chatEl.hidden) this.chatEl.hidden = false;
-      if (this.chatEl.classList.contains('is-out')) {
-        this.chatEl.classList.remove('is-out');
-      }
+      this.chatEl.classList.remove('is-out');
       this.chatUpdatedAt = performance.now();
       const remaining = Math.max(0, Math.min(CHAT_TTL, Number(ttlMs) || CHAT_TTL));
       this.scheduleChatExpiry(remaining);
@@ -448,7 +446,7 @@ const Presence = (() => {
     leave(onDone) {
       if (this.leaving) return;
       // Scale back into the tip, then drop the node — revivable mid-fade.
-      this.clearChat();
+      this.clearChat(true);
       this.leaving = true;
       this.el.classList.remove('is-in');
       this.el.classList.add('is-leaving');

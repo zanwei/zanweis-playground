@@ -45,7 +45,171 @@
         "author": { "@type": "Person", "name": "zanwei", "url": "https://github.com/zanwei" }
       }
     </script>
+    <script>
+      // Buffer real input that arrives before the body scripts load. Pointer
+      // samples stay exact; a keyboard-only "/" is handed off so Social can
+      // choose a deterministic temporary anchor after boot.
+      (function () {
+        var state = {
+          point: null,
+          slash: false,
+          dispose: dispose,
+        };
+        var blurTimer = 0;
+
+        function isEditableEvent(event) {
+          var path =
+            typeof event.composedPath === 'function'
+              ? event.composedPath()
+              : [event.target];
+          return path.some(function (node) {
+            return (
+              node &&
+              node.nodeType === 1 &&
+              (node.tagName === 'INPUT' ||
+                node.tagName === 'TEXTAREA' ||
+                node.tagName === 'SELECT' ||
+                node.isContentEditable)
+            );
+          });
+        }
+
+        function rememberPointer(event) {
+          if (event.type === 'pointerdown') state.slash = false;
+          if (
+            event.pointerType &&
+            event.pointerType !== 'mouse' &&
+            event.pointerType !== 'pen'
+          ) {
+            return;
+          }
+          if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) {
+            return;
+          }
+          if (state.point) {
+            state.point.x = event.clientX;
+            state.point.y = event.clientY;
+          } else {
+            state.point = {
+              x: event.clientX,
+              y: event.clientY,
+            };
+          }
+        }
+
+        function rememberSlash(event) {
+          if (event.isComposing || event.keyCode === 229) return;
+          if (event.key === 'Escape') {
+            state.slash = false;
+            return;
+          }
+          if (
+            event.key !== '/' ||
+            event.defaultPrevented ||
+            event.repeat ||
+            event.metaKey ||
+            event.ctrlKey ||
+            event.altKey ||
+            isEditableEvent(event)
+          ) {
+            return;
+          }
+          event.preventDefault();
+          state.slash = true;
+        }
+
+        function forgetPointer(event) {
+          if (
+            (event.pointerType &&
+              event.pointerType !== 'mouse' &&
+              event.pointerType !== 'pen') ||
+            event.relatedTarget !== null
+          ) {
+            return;
+          }
+          state.point = null;
+          state.slash = false;
+        }
+
+        function clearBufferedInput() {
+          state.point = null;
+          state.slash = false;
+        }
+
+        function cancelBufferedBlur() {
+          clearTimeout(blurTimer);
+          blurTimer = 0;
+        }
+
+        function scheduleBufferedBlur() {
+          cancelBufferedBlur();
+          blurTimer = setTimeout(function () {
+            blurTimer = 0;
+            // Focusing a same-origin iframe briefly blurs the parent Window.
+            // Keep the shortcut if the document still owns the focus chain.
+            if (document.hasFocus && document.hasFocus()) return;
+            clearBufferedInput();
+          }, 32);
+        }
+
+        function cancelSlashForFocus(event) {
+          // Programmatic focus restoration during boot must not eat a slash.
+          // Only a typing surface has actually taken ownership of the key.
+          if (isEditableEvent(event)) state.slash = false;
+        }
+
+        function dispose() {
+          cancelBufferedBlur();
+          removeEventListener('pointerover', rememberPointer, true);
+          removeEventListener('pointerenter', rememberPointer, true);
+          removeEventListener('pointermove', rememberPointer, true);
+          removeEventListener('pointerdown', rememberPointer, true);
+          removeEventListener('pointerout', forgetPointer, true);
+          removeEventListener('keydown', rememberSlash, true);
+          removeEventListener('blur', scheduleBufferedBlur, true);
+          removeEventListener('focus', cancelBufferedBlur, true);
+          document.removeEventListener(
+            'visibilitychange',
+            clearBufferedInput,
+            true
+          );
+          document.removeEventListener('focusin', cancelSlashForFocus, true);
+        }
+
+        window.__cursorChatBootstrap = state;
+        addEventListener('pointerover', rememberPointer, {
+          capture: true,
+          passive: true,
+        });
+        addEventListener('pointerenter', rememberPointer, {
+          capture: true,
+          passive: true,
+        });
+        addEventListener('pointermove', rememberPointer, {
+          capture: true,
+          passive: true,
+        });
+        addEventListener('pointerdown', rememberPointer, {
+          capture: true,
+          passive: true,
+        });
+        addEventListener('pointerout', forgetPointer, {
+          capture: true,
+          passive: true,
+        });
+        addEventListener('keydown', rememberSlash, true);
+        addEventListener('blur', scheduleBufferedBlur, true);
+        addEventListener('focus', cancelBufferedBlur, true);
+        document.addEventListener(
+          'visibilitychange',
+          clearBufferedInput,
+          true
+        );
+        document.addEventListener('focusin', cancelSlashForFocus, true);
+      })();
+    </script>
     <link rel="stylesheet" href="styles.css" />
+
     <script>
       // Mark the boot phase before first paint so card entrances stay paused
       // under the loader. A brand-click refresh sets a one-shot flag that
