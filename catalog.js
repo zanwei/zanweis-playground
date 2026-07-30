@@ -190,6 +190,64 @@ for (const f of FIGMA_FILES) {
   });
 }
 
+// Editorial stills share the same lightweight image treatment as the Figma
+// studies, but keep their original product or showcase page as Source.
+const IMAGE_FILES = [
+  {
+    slug: 'shoedex-sign-in',
+    title: 'ShoeDex Sign in',
+    image: 'assets/dribbble/shoedex-sign-in.webp',
+    source: 'https://dribbble.com/shots/26484560-ShoeDex-Sign-in',
+    bg: '#ffffff',
+    aspect: '2048 / 1415',
+  },
+  {
+    slug: 'whiteboard-1',
+    title: 'Whiteboard 1',
+    image: 'assets/whiteboard/whiteboard-1.webp',
+    source: 'https://affine.pro/whiteboard',
+    bg: '#ffffff',
+    aspect: '2048 / 1335',
+  },
+  {
+    slug: 'whiteboard-2',
+    title: 'Whiteboard 2',
+    image: 'assets/whiteboard/whiteboard-2.webp',
+    source: 'https://affine.pro/whiteboard',
+    bg: '#ffffff',
+    aspect: '2048 / 1335',
+  },
+  {
+    slug: 'whiteboard-3',
+    title: 'Whiteboard 3',
+    image: 'assets/whiteboard/whiteboard-3.webp',
+    source: 'https://affine.pro/whiteboard',
+    bg: '#ffffff',
+    aspect: '2048 / 1206',
+  },
+  {
+    slug: 'whiteboard-4',
+    title: 'Whiteboard 4',
+    image: 'assets/whiteboard/whiteboard-4.webp',
+    source: 'https://affine.pro/whiteboard',
+    bg: '#ffffff',
+    aspect: '2048 / 1335',
+  },
+];
+
+for (const item of IMAGE_FILES) {
+  CATALOG.push({
+    slug: item.slug,
+    title: item.title,
+    type: 'image',
+    image: item.image,
+    thumb: item.image,
+    github: item.source,
+    bg: item.bg,
+    aspect: item.aspect,
+  });
+}
+
 // Motion studies use a poster at rest and a muted WebM while the card is
 // hovered. Source points to the product rather than a repository.
 const VIDEO_FILES = [
@@ -206,6 +264,13 @@ const VIDEO_FILES = [
     source: 'https://bridge.surf',
     bg: '#ffffff',
     aspect: '960 / 541',
+  },
+  {
+    slug: 'shoedex-scan-button',
+    title: 'ShoeDex Scan Button',
+    source: 'https://dribbble.com/shots/26485309-ShoeDex-3D-Capture-Btn',
+    bg: '#ffffff',
+    aspect: '4 / 3',
   },
 ];
 
@@ -232,20 +297,26 @@ for (const item of VIDEO_FILES) {
 // the page must not make cards jump to different positions.
 const DISPLAY_ORDER = [
   'fontdetector-logo',
+  'shoedex-sign-in',
   'ball-model-picker',
   'macintosh-logo',
   'linear-logo',
+  'whiteboard-1',
   'table-of-content',
   'liquid-connector',
   'affine-logo',
+  'shoedex-scan-button',
   'chatgpt-model-selector',
   'bridge',
+  'whiteboard-2',
   'dialog',
   'clear-logo',
   'claude-model-selector',
+  'whiteboard-3',
   'affine-hero',
   'status-indicator',
   'model-picker',
+  'whiteboard-4',
   'dia-logo',
 ];
 const DISPLAY_RANK = new Map(DISPLAY_ORDER.map((slug, index) => [slug, index]));

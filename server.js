@@ -62,9 +62,16 @@ const MAX_PEERS = 1200; // SSE connections beyond this get 503
 const REALTIME_MAX = 12; // small rooms skip the tick: relay per-event, live
 const TICK_MS = 50; // crowded cursor fan-out runs at 20Hz, never per-event
 const TICK_CURSOR_CAP = 40; // most cursor entries carried per tick frame
+const TICK_CHAT_CAP = 20; // chat snapshots are larger than cursor entries
 const CURSOR_MIN_MS = 30; // per-peer cursor ingest floor when crowded
 const CURSOR_MIN_RT_MS = 15; // ~66Hz ceiling in the realtime tier
 const META_MIN_MS = 900; // per-peer focus/loc ingest floor
+const CHAT_TTL_MS = 5000;
+const CHAT_SESSION_HISTORY_CAP = 64;
+const CHAT_SESSION_RE = /^[A-Za-z0-9_-]{8,64}$/;
+const CHAT_ANCHOR_RE = /^(?:page|(?:card|shell):[A-Za-z0-9_-]{1,64})$/;
+const CHAT_RATE_PER_SEC = 25;
+const CHAT_RATE_BURST = 8;
 const BULLET_BURST = 3; // token bucket: burst of 3…
 const BULLET_REFILL_MS = 2500; // …refilling one every 2.5s
 const BULLET_GLOBAL_PER_SEC = 25; // whole-site bullet budget
@@ -88,8 +95,73 @@ const LIKE_CARDS = new Set([
   'affine-logo',
   'affine-hero',
   'bridge',
+  'shoedex-sign-in',
+  'shoedex-scan-button',
+  'whiteboard-1',
+  'whiteboard-2',
+  'whiteboard-3',
+  'whiteboard-4',
 ]);
 const CLIENT_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
+
+function parseChatMessage(msg) {
+  if (
+    typeof msg.session !== 'string' ||
+    !CHAT_SESSION_RE.test(msg.session) ||
+    !Number.isSafeInteger(msg.seq) ||
+    msg.seq <= 0 ||
+    typeof msg.text !== 'string'
+  ) {
+    return null;
+  }
+
+  const text = Array.from(msg.text.replace(/[\u0000-\u001F\u007F]/g, ''))
+    .slice(0, 120)
+    .join('');
+  if (!text.trim()) return { session: msg.session, seq: msg.seq, text: '' };
+  if (
+    typeof msg.a !== 'string' ||
+    !CHAT_ANCHOR_RE.test(msg.a) ||
+    !Number.isFinite(msg.fx) ||
+    !Number.isFinite(msg.fy) ||
+    !Number.isFinite(msg.ttlMs)
+  ) {
+    return null;
+  }
+
+  return {
+    session: msg.session,
+    seq: msg.seq,
+    text,
+    a: msg.a,
+    fx: msg.fx,
+    fy: msg.fy,
+    ttlMs: Math.max(1, Math.min(CHAT_TTL_MS, Math.floor(msg.ttlMs))),
+  };
+}
+
+function chatEntry(user, chat, now = Date.now()) {
+  if (!chat) return null;
+  const ttlMs = Math.min(CHAT_TTL_MS, Math.ceil(chat.expiresAt - now));
+  if (ttlMs <= 0) return null;
+  return {
+    id: user.id,
+    rev: chat.rev,
+    text: chat.text,
+    a: chat.a,
+    fx: chat.fx,
+    fy: chat.fy,
+    color: user.color,
+    ttlMs,
+  };
+}
+
+function chatRosterEntry(user, now = Date.now()) {
+  const entry = chatEntry(user, user.chat, now);
+  if (!entry) return null;
+  const { id: _id, color: _color, ...snapshot } = entry;
+  return snapshot;
+}
 
 /**
  * Server-side presence is keyed by a private stable client id, while the room
@@ -106,6 +178,10 @@ const users = new Map();
 let activitySequence = 0;
 /** card slug -> stable anonymous client IDs that currently like it. */
 const likesByCard = new Map([...LIKE_CARDS].map((card) => [card, new Set()]));
+
+function isRealtimeRoom() {
+  return users.size <= REALTIME_MAX && connections.size <= REALTIME_MAX;
+}
 
 function colorForPublicId(publicId) {
   let hash = 2166136261;
@@ -153,6 +229,123 @@ function connectionRecords(user) {
     if (connection) records.push(connection);
   }
   return records;
+}
+
+function acceptChatSequence(connection, session, seq) {
+  const previous = connection.chatSeqs.get(session) || 0;
+  if (seq <= previous) return false;
+  connection.chatSeqs.set(session, seq);
+  while (connection.chatSeqs.size > CHAT_SESSION_HISTORY_CAP) {
+    const oldest = connection.chatSeqs.keys().next().value;
+    if (oldest === connection.chat?.session) {
+      const activeSeq = connection.chatSeqs.get(oldest);
+      connection.chatSeqs.delete(oldest);
+      connection.chatSeqs.set(oldest, activeSeq);
+      continue;
+    }
+    connection.chatSeqs.delete(oldest);
+  }
+  return true;
+}
+
+function supersedeConnectionChat(connection) {
+  if (!connection.chat) return;
+  connection.supersededChatSessions.add(connection.chat.session);
+  connection.chat = null;
+  while (connection.supersededChatSessions.size > CHAT_SESSION_HISTORY_CAP) {
+    connection.supersededChatSessions.delete(
+      connection.supersededChatSessions.values().next().value
+    );
+  }
+}
+
+function chatBudgetOk(connection, now) {
+  const elapsed = Math.max(0, now - connection.chatTokenAt);
+  connection.chatTokens = Math.min(
+    CHAT_RATE_BURST,
+    connection.chatTokens + (elapsed * CHAT_RATE_PER_SEC) / 1000
+  );
+  connection.chatTokenAt = now;
+  if (connection.chatTokens < 1) return false;
+  connection.chatTokens -= 1;
+  return true;
+}
+
+function publishChat(user, chat, now = Date.now()) {
+  const entry = chatEntry(user, chat, now);
+  if (!entry) return;
+  if (isRealtimeRoom()) {
+    pendingChats.delete(user.id);
+    broadcast({ t: 'chat', ...entry }, user.id);
+  } else {
+    pendingChats.set(user.id, { ...entry, expiresAt: chat.expiresAt });
+  }
+}
+
+function clearOwnedChat(user, connection, session = null) {
+  const current = user.chat;
+  if (
+    !current ||
+    current.owner !== connection ||
+    (session !== null && current.session !== session)
+  ) {
+    if (connection.chat?.session === session) connection.chat = null;
+    return false;
+  }
+
+  connection.chat = null;
+  user.chat = null;
+  pendingChats.delete(user.id);
+  const rev = ++activitySequence;
+  broadcast(
+    {
+      t: 'chat',
+      id: user.id,
+      rev,
+      text: '',
+      a: current.a,
+      fx: current.fx,
+      fy: current.fy,
+      color: user.color,
+      ttlMs: 0,
+    },
+    user.id
+  );
+  return true;
+}
+
+function applyChat(user, connection, parsed, now) {
+  if (!acceptChatSequence(connection, parsed.session, parsed.seq)) return;
+  if (connection.supersededChatSessions.has(parsed.session)) return;
+
+  if (!parsed.text) {
+    clearOwnedChat(user, connection, parsed.session);
+    return;
+  }
+  if (!isRealtimeRoom() && !chatBudgetOk(connection, now)) return;
+
+  // One public user owns one cursor-chat bubble. Superseded sibling state is
+  // cleared so a later close or hibernation restore cannot resurrect it.
+  for (const record of connectionRecords(user)) {
+    if (record.chat && (record !== connection || record.chat.session !== parsed.session)) {
+      supersedeConnectionChat(record);
+    }
+  }
+
+  const chat = {
+    session: parsed.session,
+    rev: ++activitySequence,
+    text: parsed.text,
+    a: parsed.a,
+    fx: parsed.fx,
+    fy: parsed.fy,
+    expiresAt: now + parsed.ttlMs,
+  };
+  connection.chat = chat;
+  connection.idle = false;
+  user.chat = { ...chat, owner: connection };
+  user.idle = false;
+  publishChat(user, user.chat, now);
 }
 
 function syncUserState(user) {
@@ -204,10 +397,13 @@ function dropConnection(token, connection, destroy = false) {
   // close/error can arrive more than once, and an old connection can close
   // after a replacement is already live. Only remove this exact connection.
   if (connections.get(token) !== connection) return;
+  const queued = pendingConnectionDrops.get(token);
+  if (queued?.connection === connection) pendingConnectionDrops.delete(token);
   connections.delete(token);
 
   const { user } = connection;
   user.connections.delete(token);
+  clearOwnedChat(user, connection);
   if (destroy) {
     try {
       connection.res.destroy();
@@ -226,29 +422,65 @@ function dropConnection(token, connection, destroy = false) {
   if (users.get(user.clientId) !== user) return;
   users.delete(user.clientId);
   pendingCursors.delete(user.id);
+  pendingChats.delete(user.id);
   if (user.spray) broadcast({ t: 'spray', id: user.id, on: 0 }, user.id);
   broadcast({ t: 'leave', id: user.id });
   countDirty = true;
 }
 
+const pendingConnectionDrops = new Map();
+let connectionDropFlushScheduled = false;
+let flushingConnectionDrops = false;
+
+function queueConnectionDrop(token, connection) {
+  if (connections.get(token) !== connection) return;
+  const queued = pendingConnectionDrops.get(token);
+  if (queued?.connection === connection) return;
+  pendingConnectionDrops.set(token, { connection });
+  if (flushingConnectionDrops || connectionDropFlushScheduled) return;
+  connectionDropFlushScheduled = true;
+  queueMicrotask(flushConnectionDrops);
+}
+
+function flushConnectionDrops() {
+  connectionDropFlushScheduled = false;
+  if (flushingConnectionDrops) return;
+  flushingConnectionDrops = true;
+  try {
+    while (pendingConnectionDrops.size) {
+      const [token, queued] = pendingConnectionDrops.entries().next().value;
+      pendingConnectionDrops.delete(token);
+      dropConnection(token, queued.connection, true);
+    }
+  } finally {
+    flushingConnectionDrops = false;
+    if (pendingConnectionDrops.size && !connectionDropFlushScheduled) {
+      connectionDropFlushScheduled = true;
+      queueMicrotask(flushConnectionDrops);
+    }
+  }
+}
+
 function broadcast(payload, exceptUserId) {
   const line = `data: ${JSON.stringify(payload)}\n\n`;
-  const failed = [];
   for (const [token, connection] of connections) {
     if (connection.user.id === exceptUserId) continue;
+    if (pendingConnectionDrops.get(token)?.connection === connection) continue;
     // A consumer that stopped reading would buffer this process into the
     // ground — cut it loose; its EventSource reconnects when it recovers.
     if (connection.res.writableLength > SLOW_LIMIT) {
-      failed.push([token, connection]);
+      queueConnectionDrop(token, connection);
       continue;
     }
     try {
       connection.res.write(line);
+      if (connection.res.writableLength > SLOW_LIMIT) {
+        queueConnectionDrop(token, connection);
+      }
     } catch {
-      failed.push([token, connection]);
+      queueConnectionDrop(token, connection);
     }
   }
-  for (const [token, connection] of failed) dropConnection(token, connection, true);
 }
 
 // Like SETs are acknowledged immediately to every live tab sharing the
@@ -256,27 +488,30 @@ function broadcast(payload, exceptUserId) {
 // burst costs one room-wide frame instead of one fanout per event.
 function publishLike(card, count, clientId, on, changed) {
   if (changed) pendingLikeCounts.set(card, count);
-  const failed = [];
   for (const [token, connection] of connections) {
     if (connection.user.clientId !== clientId) continue;
+    if (pendingConnectionDrops.get(token)?.connection === connection) continue;
     if (connection.res.writableLength > SLOW_LIMIT) {
-      failed.push([token, connection]);
+      queueConnectionDrop(token, connection);
       continue;
     }
     try {
       connection.res.write(
         `data: ${JSON.stringify({ t: 'like', card, count, on })}\n\n`
       );
+      if (connection.res.writableLength > SLOW_LIMIT) {
+        queueConnectionDrop(token, connection);
+      }
     } catch {
-      failed.push([token, connection]);
+      queueConnectionDrop(token, connection);
     }
   }
-  for (const [token, connection] of failed) dropConnection(token, connection, true);
 }
 
-// --- room tick: coalesced cursors and like counts, flushed as frames -------
+// --- room tick: coalesced cursors, chats, and like counts, flushed as frames
 
 const pendingCursors = new Map(); // id -> { a, fx, fy }
+const pendingChats = new Map(); // id -> latest unexpired chat snapshot
 const pendingLikeCounts = new Map(); // card -> latest authoritative count
 let countDirty = false;
 let tickTimer = null;
@@ -286,6 +521,7 @@ function tick() {
     clearInterval(tickTimer);
     tickTimer = null;
     pendingCursors.clear();
+    pendingChats.clear();
     pendingLikeCounts.clear();
     return;
   }
@@ -298,14 +534,29 @@ function tick() {
     pendingLikeCounts.clear();
     broadcast({ t: 'likes', counts });
   }
-  if (pendingCursors.size === 0) return;
-  const list = [];
-  for (const [id, c] of pendingCursors) {
-    list.push({ id, a: c.a, fx: c.fx, fy: c.fy, color: c.color });
-    pendingCursors.delete(id);
-    if (list.length >= TICK_CURSOR_CAP) break; // the rest ride the next tick
+  if (pendingChats.size) {
+    const now = Date.now();
+    const list = [];
+    for (const [id, chat] of pendingChats) {
+      pendingChats.delete(id);
+      const ttlMs = Math.min(CHAT_TTL_MS, Math.ceil(chat.expiresAt - now));
+      if (ttlMs > 0) {
+        const { expiresAt: _expiresAt, ...entry } = chat;
+        list.push({ ...entry, ttlMs });
+      }
+      if (list.length >= TICK_CHAT_CAP) break;
+    }
+    if (list.length) broadcast({ t: 'chats', list });
   }
-  if (list.length) broadcast({ t: 'cursors', list });
+  if (pendingCursors.size) {
+    const list = [];
+    for (const [id, c] of pendingCursors) {
+      list.push({ id, a: c.a, fx: c.fx, fy: c.fy, color: c.color });
+      pendingCursors.delete(id);
+      if (list.length >= TICK_CURSOR_CAP) break; // the rest ride the next tick
+    }
+    if (list.length) broadcast({ t: 'cursors', list });
+  }
 }
 
 function ensureTick() {
@@ -352,6 +603,7 @@ function presenceStream(req, res) {
       idle: true,
       focus: null,
       spray: false,
+      chat: null,
       likeAt: 0,
       bTokens: BULLET_BURST,
       bAt: now,
@@ -377,6 +629,7 @@ function presenceStream(req, res) {
       color: other.color,
       last: other.lastEvent || null,
       loc: other.loc || null,
+      chat: chatRosterEntry(other, now),
     });
   }
 
@@ -394,6 +647,11 @@ function presenceStream(req, res) {
     locAt: 0,
     spray: false,
     sprayAt: 0,
+    chat: null,
+    chatSeqs: new Map(),
+    supersededChatSessions: new Set(),
+    chatTokens: CHAT_RATE_BURST,
+    chatTokenAt: now,
   };
   connections.set(token, connection);
   user.connections.add(token);
@@ -442,7 +700,7 @@ function presenceEvent(req, res) {
 
       switch (msg.t) {
         case 'cursor': {
-          const realtime = users.size <= REALTIME_MAX;
+          const realtime = isRealtimeRoom();
           const floor = realtime ? CURSOR_MIN_RT_MS : CURSOR_MIN_MS;
           if (now - connection.cursorAt < floor) break; // over the floor: drop
           connection.cursorAt = now;
@@ -476,6 +734,12 @@ function presenceEvent(req, res) {
           broadcast({ t: 'bullet', id, text: msg.text.slice(0, 120), color: user.color }, id);
           break;
         }
+        case 'chat': {
+          const parsed = parseChatMessage(msg);
+          if (!parsed) break;
+          applyChat(user, connection, parsed, now);
+          break;
+        }
         case 'focus':
         case 'loc': {
           // A swallowed CLEAR leaves a ghost dot on everyone's cards — only
@@ -497,6 +761,7 @@ function presenceEvent(req, res) {
           break;
         }
         case 'idle': {
+          clearOwnedChat(user, connection);
           if (!connection.idle) {
             connection.idle = true;
             syncUserState(user);

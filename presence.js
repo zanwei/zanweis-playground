@@ -16,16 +16,25 @@
 'use strict';
 
 const Presence = (() => {
-  const SEND_INTERVAL = 40; // ms between cursor reports (~25Hz), crowd-scaled
+  const SEND_INTERVAL = 1000 / 30; // cursor reports top out at display-friendly ~30Hz
   const MAX_RENDERED = 30; // cursors drawn at once; beyond this they're noise
   const HEARTBEAT = 2000; // BroadcastChannel liveness ping
   const PEER_TIMEOUT = 5500;
   const IDLE_HIDE = 30000; // hide a cursor that hasn't moved in 30s
+  const CHAT_TTL = 5000;
+  const CHAT_MOVE_INTERVAL = 100;
+  const CHAT_TEXT_MAX = 120;
   // .is-leaving runs at --duration-quick; +30ms of slack before removal.
   const LEAVE_MS =
     (parseFloat(
       getComputedStyle(document.documentElement).getPropertyValue('--duration-quick')
     ) || 150) + 30;
+  const CHAT_FADE_MS =
+    (parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue(
+        '--duration-cursor-chat'
+      )
+    ) || 320) + 30;
   const COLORS = ['orange', 'violet', 'green', 'pink', 'blue', 'amber'];
   const LIKE_CARDS = new Set([
     'status-indicator',
@@ -44,6 +53,12 @@ const Presence = (() => {
     'affine-logo',
     'affine-hero',
     'bridge',
+    'shoedex-sign-in',
+    'shoedex-scan-button',
+    'whiteboard-1',
+    'whiteboard-2',
+    'whiteboard-3',
+    'whiteboard-4',
   ]);
   // Private anonymous browser identity shared by presence and likes. Keeping
   // the original storage key preserves existing visitors across the protocol
@@ -52,11 +67,32 @@ const Presence = (() => {
   const CLIENT_KEY = 'zw-like-client-v1';
   const LIKE_MINE_KEY = 'zw-like-mine-v1';
   const CLIENT_ID_RE = /^[A-Za-z0-9_-]{16,64}$/;
+  const CHAT_SESSION_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
   // Peers announce a color NAME; the stylesheet owns the actual values.
   const cssColor = (c) => (c && c.startsWith('#') ? c : `var(--presence-${c || 'blue'})`);
 
   const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+
+  function normalizeChatText(value) {
+    if (typeof value !== 'string') return '';
+    const clean = value.replace(/[\u0000-\u001f\u007f]/g, '');
+    return Array.from(clean).slice(0, CHAT_TEXT_MAX).join('');
+  }
+
+  function validChatPosition(anchor, fx, fy) {
+    if (
+      typeof anchor !== 'string' ||
+      !/^(?:page|card:[a-z0-9-]+|shell:[a-z0-9-]+)$/.test(anchor) ||
+      !Number.isFinite(fx) ||
+      !Number.isFinite(fy) ||
+      fx < 0 ||
+      fx > 1
+    ) {
+      return false;
+    }
+    return anchor === 'page' ? fy >= 0 && fy <= 10_000_000 : fy >= 0 && fy <= 1;
+  }
 
   function stableClientId() {
     try {
@@ -102,12 +138,49 @@ const Presence = (() => {
         fill="currentColor" stroke="#fff" stroke-width="2" stroke-linejoin="round"/>
     </svg>`;
 
+  const chatCursorByElement = new WeakMap();
+  const chatResizeObserver =
+    typeof ResizeObserver === 'function'
+      ? new ResizeObserver((entries) => {
+          for (const entry of entries) {
+            const cursor = chatCursorByElement.get(entry.target);
+            if (!cursor) continue;
+            const borderBox = Array.isArray(entry.borderBoxSize)
+              ? entry.borderBoxSize[0]
+              : entry.borderBoxSize;
+            const borderWidth = Number(borderBox?.inlineSize);
+            const borderHeight = Number(borderBox?.blockSize);
+            const contentWidth = Number(entry.contentRect?.width);
+            const contentHeight = Number(entry.contentRect?.height);
+            const hasBorderSize = borderWidth > 0 && borderHeight > 0;
+            const hasContentSize = contentWidth > 0 && contentHeight > 0;
+            if (entry.target.hidden || (!hasBorderSize && !hasContentSize)) continue;
+            const width = hasBorderSize ? borderWidth : contentWidth + 28;
+            const height = hasBorderSize ? borderHeight : contentHeight + 16;
+            if (width <= 0 || height <= 0) continue;
+            cursor.chatSize = { width, height };
+            cursor.placeChat(true);
+          }
+        })
+      : null;
+
   class RemoteCursor {
     constructor(overlay, color) {
       this.el = document.createElement('div');
       this.el.className = 'presence-cursor';
       this.el.style.color = cssColor(color);
       this.el.innerHTML = `<div class="presence-cursor-inner">${CURSOR_SVG}</div>`;
+      this.chatEl = document.createElement('div');
+      this.chatEl.className = 'cursor-chat-bubble';
+      this.chatEl.dataset.chatColor = COLORS.includes(color)
+        ? color
+        : colorForId(String(color || 'blue'));
+      this.chatEl.setAttribute('aria-hidden', 'true');
+      this.chatEl.hidden = true;
+      this.chatText = document.createElement('span');
+      this.chatText.className = 'cursor-chat-text';
+      this.chatEl.appendChild(this.chatText);
+      this.el.appendChild(this.chatEl);
       this.el.style.visibility = 'hidden';
       overlay.appendChild(this.el);
       this.x = 0;
@@ -118,9 +191,28 @@ const Presence = (() => {
       this.placed = false;
       this.leaving = false;
       this.leaveTimer = null;
+      this.chatTimer = null;
+      this.chatRemovalTimer = null;
+      this.chatExpiresAt = 0;
+      this.chatTimerDue = 0;
+      this.chatRev = -1;
+      this.chatUpdatedAt = 0;
+      this.chatSize = { width: 190, height: 35 };
+      this.chatOffset = { x: Number.NaN, y: Number.NaN };
+      this.renderedPosition = { x: Number.NaN, y: Number.NaN };
+      this.visible = false;
+      chatCursorByElement.set(this.chatEl, this);
+      chatResizeObserver?.observe(this.chatEl);
     }
 
     setTarget(anchor, fx, fy) {
+      if (!validChatPosition(anchor, fx, fy)) return;
+      const wasDormant = !this.placed || performance.now() - this.seenAt > IDLE_HIDE;
+      const changed =
+        !this.target ||
+        this.target.anchor !== anchor ||
+        Math.abs(this.target.fx - fx) > 0.00001 ||
+        Math.abs(this.target.fy - fy) > 0.00001;
       // The anchor element only changes when the anchor string does — cache
       // it so resolve() doesn't run a document-wide query every frame.
       if (!this.target || this.target.anchor !== anchor) {
@@ -131,6 +223,101 @@ const Presence = (() => {
       }
       this.target = { anchor, fx, fy };
       this.seenAt = performance.now();
+      return changed || wasDormant;
+    }
+
+    get hasChat() {
+      return !this.chatEl.hidden && !this.chatEl.classList.contains('is-out');
+    }
+
+    setChat({ text, rev, ttlMs, a, fx, fy }) {
+      const nextRev = Number.isSafeInteger(rev) ? rev : this.chatRev + 1;
+      if (nextRev <= this.chatRev) return false;
+      this.chatRev = nextRev;
+      const targetChanged = validChatPosition(a, fx, fy)
+        ? this.setTarget(a, fx, fy)
+        : false;
+
+      const safeText = normalizeChatText(text);
+      if (!safeText || safeText.trim() === '') {
+        this.clearChat();
+        return targetChanged;
+      }
+
+      clearTimeout(this.chatRemovalTimer);
+      this.chatRemovalTimer = null;
+      if (this.chatText.textContent !== safeText) this.chatText.textContent = safeText;
+      if (this.chatEl.hidden) this.chatEl.hidden = false;
+      if (this.chatEl.classList.contains('is-out')) {
+        this.chatEl.classList.remove('is-out');
+      }
+      this.chatUpdatedAt = performance.now();
+      const remaining = Math.max(0, Math.min(CHAT_TTL, Number(ttlMs) || CHAT_TTL));
+      this.scheduleChatExpiry(remaining);
+      this.placeChat();
+      return targetChanged;
+    }
+
+    scheduleChatExpiry(remaining) {
+      const deadline = performance.now() + remaining;
+      this.chatExpiresAt = deadline;
+      // Extending a live deadline does not churn the timer; its existing
+      // callback will re-check once. A shorter roster/reconnect TTL must move
+      // the callback earlier so stale text never lingers.
+      if (this.chatTimer !== null && deadline >= this.chatTimerDue - 1) return;
+      if (this.chatTimer !== null) clearTimeout(this.chatTimer);
+      const expire = () => {
+        this.chatTimer = null;
+        this.chatTimerDue = 0;
+        const delay = this.chatExpiresAt - performance.now();
+        if (delay > 1) {
+          this.chatTimerDue = this.chatExpiresAt;
+          this.chatTimer = setTimeout(expire, delay);
+          return;
+        }
+        this.clearChat();
+      };
+      this.chatTimerDue = deadline;
+      this.chatTimer = setTimeout(expire, remaining);
+    }
+
+    clearChat(immediate = false) {
+      clearTimeout(this.chatTimer);
+      clearTimeout(this.chatRemovalTimer);
+      this.chatTimer = null;
+      this.chatRemovalTimer = null;
+      this.chatExpiresAt = 0;
+      this.chatTimerDue = 0;
+      if (this.chatEl.hidden) return;
+      if (immediate) {
+        this.chatEl.hidden = true;
+        this.chatEl.classList.remove('is-out');
+        this.chatText.textContent = '';
+        return;
+      }
+      this.chatEl.classList.add('is-out');
+      this.chatRemovalTimer = setTimeout(() => {
+        this.chatRemovalTimer = null;
+        if (!this.chatEl.classList.contains('is-out')) return;
+        this.chatEl.hidden = true;
+        this.chatEl.classList.remove('is-out');
+        this.chatText.textContent = '';
+      }, CHAT_FADE_MS);
+    }
+
+    placeChat(force = false) {
+      if (this.chatEl.hidden) return;
+      const { width, height } = this.chatSize;
+      const gutter = 8;
+      let dx = this.x + 26 + width <= innerWidth - gutter ? 26 : -width - 14;
+      let dy = this.y + 22 + height <= innerHeight - gutter ? 22 : -height - 14;
+      dx = Math.max(gutter - this.x, Math.min(dx, innerWidth - gutter - width - this.x));
+      dy = Math.max(gutter - this.y, Math.min(dy, innerHeight - gutter - height - this.y));
+      const x = Math.round(dx);
+      const y = Math.round(dy);
+      if (!force && x === this.chatOffset.x && y === this.chatOffset.y) return;
+      this.chatOffset = { x, y };
+      this.chatEl.style.transform = `translate3d(${x}px, ${y}px, 0)`;
     }
 
     resolve() {
@@ -150,13 +337,19 @@ const Presence = (() => {
       return { x: rect.left + fx * rect.width, y: rect.top + fy * rect.height };
     }
 
+    setVisible(visible) {
+      if (visible === this.visible) return;
+      this.visible = visible;
+      this.el.style.visibility = visible ? 'visible' : 'hidden';
+    }
+
     tick(now, dt, tau) {
       const p = this.resolve();
       if (!p || now - this.seenAt > IDLE_HIDE) {
-        this.el.style.visibility = 'hidden';
+        this.setVisible(false);
         this.placed = false; // reappear with the pop-in, not a flight across
         this.el.classList.remove('is-in');
-        return;
+        return false;
       }
       if (!this.placed) {
         // First (re)appearance: start at the target and pop in from the tip.
@@ -164,26 +357,40 @@ const Presence = (() => {
         this.y = p.y;
         this.placed = true;
         requestAnimationFrame(() => this.el.classList.add('is-in'));
+      } else {
+        // Exponential time-based damping: identical feel at 60/120/144Hz.
+        // Snap the sub-pixel tail so a settled room can park its RAF loop.
+        const k = reduceMotion.matches ? 1 : 1 - Math.exp(-dt / (tau || 51));
+        this.x += (p.x - this.x) * k;
+        this.y += (p.y - this.y) * k;
+        if (Math.abs(p.x - this.x) <= 0.25) this.x = p.x;
+        if (Math.abs(p.y - this.y) <= 0.25) this.y = p.y;
       }
-      // Exponential time-based damping: identical feel at 60/120/144Hz.
-      // τ comes from the room's pace tier (tight in small rooms). Snap when
-      // the viewer prefers reduced motion.
-      const k = reduceMotion.matches ? 1 : 1 - Math.exp(-dt / (tau || 51));
-      this.x += (p.x - this.x) * k;
-      this.y += (p.y - this.y) * k;
       const onScreen =
         this.x > -40 && this.y > -40 && this.x < innerWidth + 40 && this.y < innerHeight + 40;
-      this.el.style.visibility = onScreen ? 'visible' : 'hidden';
-      this.el.style.transform = `translate3d(${this.x}px, ${this.y}px, 0)`;
+      this.setVisible(onScreen);
+      const renderedX = Math.round(this.x * 10) / 10;
+      const renderedY = Math.round(this.y * 10) / 10;
+      if (
+        renderedX !== this.renderedPosition.x ||
+        renderedY !== this.renderedPosition.y
+      ) {
+        this.renderedPosition = { x: renderedX, y: renderedY };
+        this.el.style.transform = `translate3d(${renderedX}px, ${renderedY}px, 0)`;
+        this.placeChat();
+      }
+      return Math.abs(p.x - this.x) > 0.25 || Math.abs(p.y - this.y) > 0.25;
     }
 
     leave(onDone) {
+      if (this.leaving) return;
       // Scale back into the tip, then drop the node — revivable mid-fade.
+      this.clearChat();
       this.leaving = true;
       this.el.classList.remove('is-in');
       this.el.classList.add('is-leaving');
       this.leaveTimer = setTimeout(() => {
-        this.el.remove();
+        this.destroy();
         onDone();
       }, LEAVE_MS);
     }
@@ -193,6 +400,15 @@ const Presence = (() => {
       this.leaving = false;
       this.el.classList.remove('is-leaving');
       this.placed = false; // pops back in from the tip
+    }
+
+    destroy() {
+      clearTimeout(this.leaveTimer);
+      clearTimeout(this.chatTimer);
+      clearTimeout(this.chatRemovalTimer);
+      chatResizeObserver?.unobserve(this.chatEl);
+      chatCursorByElement.delete(this.chatEl);
+      this.el.remove();
     }
   }
 
@@ -234,14 +450,14 @@ const Presence = (() => {
     overlay.setAttribute('aria-hidden', 'true');
     document.body.appendChild(overlay);
 
-    // The crowd sets the pace: a small room runs a realtime tier (40Hz
+    // The crowd sets the pace: a small room runs a realtime tier (30Hz
     // reports, tight damping), bigger rooms lower their voice step by step.
     // Past 400 the cursor layer goes quiet — the count carries the story.
     let sendEvery = SEND_INTERVAL;
     let dampTau = 51; // ms; smaller = remote cursors track tighter
     function paceForCount(n) {
       if (n <= 12) {
-        sendEvery = 25;
+        sendEvery = SEND_INTERVAL;
         dampTau = 30;
       } else {
         sendEvery = n <= 30 ? SEND_INTERVAL : n <= 150 ? 100 : n <= 400 ? 250 : Infinity;
@@ -259,9 +475,12 @@ const Presence = (() => {
     const pendingLikes = new Map(); // card -> desired boolean, until server ack
     const likeRetryTimers = new Map();
     let send = () => {};
+    let sendCursor = () => {};
     let transport = 'pending';
     let myId = null;
     let myFocus = null; // replayed once the transport comes up (deep links)
+    let chatReplay = null;
+    let chatTrackingUntil = 0;
 
     function notifyLocations() {
       if (onLocations) onLocations([...locations.values()]);
@@ -378,14 +597,125 @@ const Presence = (() => {
       for (const [card, on] of pendingLikes) transmitLike(card, on);
     }
 
-    function peerCursor(id, color) {
-      let c = cursors.get(id);
+    function chatWirePayload(snapshot, ttlMs) {
+      const position = anchorFor(snapshot.x, snapshot.y);
+      return {
+        t: 'chat',
+        session: snapshot.session,
+        seq: snapshot.seq,
+        rev: snapshot.seq, // BroadcastChannel has no server revision.
+        text: snapshot.text,
+        a: position.anchor,
+        fx: position.fx,
+        fy: position.fy,
+        ttlMs,
+      };
+    }
+
+    function replayCursorChat() {
+      if (!chatReplay) return;
+      const remaining = chatReplay.expiresAt - Date.now();
+      if (remaining <= 0) {
+        chatReplay = null;
+        chatTrackingUntil = 0;
+        return;
+      }
+      send(chatWirePayload(chatReplay, Math.min(CHAT_TTL, remaining)));
+    }
+
+    const pendingRemoteChats = new Map();
+    let remoteChatFrame = null;
+
+    function applyRemoteChat(msg) {
+      const peerId = String(msg.id);
+      const safeText = normalizeChatText(msg.text);
+      if (!safeText || safeText.trim() === '') {
+        const cursor = cursors.get(peerId);
+        if (
+          cursor?.setChat({
+            text: '',
+            rev: msg.rev,
+            ttlMs: msg.ttlMs,
+            a: msg.a,
+            fx: msg.fx,
+            fy: msg.fy,
+          })
+        ) {
+          ensureLoop();
+        }
+        return;
+      }
+      if (!validChatPosition(msg.a, msg.fx, msg.fy)) return;
+      const cursor = peerCursor(peerId, msg.color, true);
+      if (
+        cursor?.setChat({
+          text: safeText,
+          rev: msg.rev,
+          ttlMs: msg.ttlMs,
+          a: msg.a,
+          fx: msg.fx,
+          fy: msg.fy,
+        })
+      ) {
+        ensureLoop();
+      }
+    }
+
+    function flushRemoteChats() {
+      remoteChatFrame = null;
+      const updates = [...pendingRemoteChats.values()];
+      pendingRemoteChats.clear();
+      for (const update of updates) applyRemoteChat(update);
+    }
+
+    function queueRemoteChat(msg) {
+      const peerId = String(msg.id);
+      if (peerId === String(myId)) return;
+      const previous = pendingRemoteChats.get(peerId);
+      if (
+        previous &&
+        Number.isSafeInteger(previous.rev) &&
+        Number.isSafeInteger(msg.rev) &&
+        msg.rev <= previous.rev
+      ) {
+        return;
+      }
+      pendingRemoteChats.set(peerId, msg);
+      if (remoteChatFrame === null) {
+        remoteChatFrame = requestAnimationFrame(flushRemoteChats);
+      }
+    }
+
+    function evictCursorForChat() {
+      let candidate = null;
+      for (const entry of cursors) {
+        const [, cursor] = entry;
+        // Keep active and fading chats in stable DOM slots. Rotating 31+
+        // active peers through a 30-cursor cap causes continuous SVG parsing,
+        // layer promotion, and timer churn under load.
+        if (!cursor.chatEl.hidden || cursor.leaving) continue;
+        if (!candidate || cursor.seenAt < candidate[1].seenAt) {
+          candidate = entry;
+        }
+      }
+      if (!candidate) return false;
+      const [id, cursor] = candidate;
+      cursor.destroy();
+      cursors.delete(id);
+      return true;
+    }
+
+    function peerCursor(id, color, prioritizeChat = false) {
+      const peerId = String(id);
+      let c = cursors.get(peerId);
       if (!c) {
         // In a real crowd, arrows past the first few dozen are pure noise —
-        // cap what we render; the count still tells the whole story.
-        if (cursors.size >= MAX_RENDERED) return null;
+        // chat takes the scarce slots from the stalest quiet cursor first.
+        if (cursors.size >= MAX_RENDERED && (!prioritizeChat || !evictCursorForChat())) {
+          return null;
+        }
         c = new RemoteCursor(overlay, color);
-        cursors.set(id, c);
+        cursors.set(peerId, c);
         ensureLoop();
       } else if (c.leaving) {
         c.revive(); // returning peer reuses the fading cursor, no duplicate
@@ -394,13 +724,18 @@ const Presence = (() => {
     }
 
     function dropPeer(id) {
-      const c = cursors.get(id);
-      if (c) c.leave(() => cursors.delete(id));
+      const peerId = String(id);
+      pendingRemoteChats.delete(peerId);
+      const c = cursors.get(peerId);
+      if (c) c.leave(() => cursors.delete(peerId));
       if (focuses.delete(id) && onFocus) onFocus([...focuses.values()]);
       if (locations.delete(id)) notifyLocations();
     }
 
     function dropAllPeers() {
+      pendingRemoteChats.clear();
+      if (remoteChatFrame !== null) cancelAnimationFrame(remoteChatFrame);
+      remoteChatFrame = null;
       const ids = new Set([
         ...cursors.keys(),
         ...focuses.keys(),
@@ -422,6 +757,7 @@ const Presence = (() => {
           msg.t === 'focus' ||
           msg.t === 'loc' ||
           msg.t === 'bullet' ||
+          msg.t === 'chat' ||
           msg.t === 'spray' ||
           msg.t === 'idle' ||
           msg.t === 'leave')
@@ -430,14 +766,26 @@ const Presence = (() => {
       }
 
       switch (msg.t) {
-        case 'cursor':
-          peerCursor(msg.id, msg.color)?.setTarget(msg.a, msg.fx, msg.fy);
+        case 'cursor': {
+          const cursor = peerCursor(msg.id, msg.color);
+          if (cursor?.setTarget(msg.a, msg.fx, msg.fy)) ensureLoop();
           break;
+        }
         case 'cursors':
           // Server tick frame: the latest position for every peer that moved.
           for (const e of msg.list || []) {
             if (String(e.id) === String(myId)) continue;
-            peerCursor(e.id, e.color)?.setTarget(e.a, e.fx, e.fy);
+            const cursor = peerCursor(e.id, e.color);
+            if (cursor?.setTarget(e.a, e.fx, e.fy)) ensureLoop();
+          }
+          break;
+        case 'chat':
+          queueRemoteChat(msg);
+          break;
+        case 'chats':
+          for (const entry of msg.list || []) {
+            if (String(entry.id) === String(myId)) continue;
+            queueRemoteChat(entry);
           }
           break;
         case 'focus':
@@ -469,8 +817,10 @@ const Presence = (() => {
           break;
         case 'idle': {
           // Backgrounded, not gone: retract the cursor, keep the location.
-          const c = cursors.get(msg.id);
-          if (c) c.leave(() => cursors.delete(msg.id));
+          const peerId = String(msg.id);
+          pendingRemoteChats.delete(peerId);
+          const c = cursors.get(peerId);
+          if (c) c.leave(() => cursors.delete(peerId));
           break;
         }
         case 'leave':
@@ -479,17 +829,19 @@ const Presence = (() => {
       }
     }
 
-    // render loop — parks itself when no cursors are on the page, restarted
-    // by peerCursor(). dt drives frame-rate-independent damping.
+    // One shared RAF, like recent.design's scheduler: run at display cadence
+    // only while cursors are moving, then park until state or layout changes.
     let rafId = null;
+    let parkedTimer = null;
     let lastFrame = 0;
     function frame(now) {
       rafId = null;
-      const dt = Math.min(250, now - (lastFrame || now));
+      const dt = lastFrame ? Math.min(250, now - lastFrame) : 1000 / 60;
       lastFrame = now;
       let stale = null;
+      let moving = false;
       for (const [id, c] of cursors) {
-        c.tick(now, dt, dampTau);
+        if (c.tick(now, dt, dampTau)) moving = true;
         // Long-hidden cursors leave the map entirely, so an idle room's
         // loop can park instead of ticking ghosts forever.
         if (!c.leaving && now - c.seenAt > IDLE_HIDE * 2) (stale ||= []).push(id);
@@ -500,12 +852,27 @@ const Presence = (() => {
           if (c) c.leave(() => cursors.delete(id));
         }
       }
-      if (cursors.size > 0) rafId = requestAnimationFrame(frame);
-      else lastFrame = 0;
+      if (cursors.size === 0) {
+        lastFrame = 0;
+      } else if (moving) {
+        rafId = requestAnimationFrame(frame);
+      } else {
+        lastFrame = 0;
+        parkedTimer = setTimeout(() => {
+          parkedTimer = null;
+          ensureLoop();
+        }, 1000);
+      }
     }
     function ensureLoop() {
+      if (parkedTimer !== null) {
+        clearTimeout(parkedTimer);
+        parkedTimer = null;
+      }
       if (rafId === null) rafId = requestAnimationFrame(frame);
     }
+    addEventListener('scroll', ensureLoop, { passive: true });
+    addEventListener('resize', ensureLoop, { passive: true });
 
     // --- transport: SSE first, BroadcastChannel fallback -------------------
 
@@ -530,21 +897,30 @@ const Presence = (() => {
           opened = true;
           transport = 'ws';
           myId = msg.id;
-          if (onSelf) onSelf({ color: cssColor(msg.color), transport: 'ws' });
+          const colorName = COLORS.includes(msg.color)
+            ? msg.color
+            : colorForId(String(myId || clientId));
+          if (onSelf) {
+            onSelf({ color: cssColor(colorName), colorName, transport: 'ws' });
+          }
           for (const peer of msg.peers || []) {
             if (String(peer.id) === String(myId)) continue;
             if (peer.last) handle({ ...peer.last, color: peer.color });
             if (peer.loc) handle({ t: 'loc', id: peer.id, color: peer.color, loc: peer.loc });
+            if (peer.chat) handle({ t: 'chat', id: peer.id, color: peer.color, ...peer.chat });
           }
           // The socket authenticates this connection; hello's id is the
           // stable public user identity shared by reconnects and sibling tabs.
-          send = (payload) => {
+          const sendWS = (payload) => {
             if (ws.readyState === 1) ws.send(JSON.stringify(payload));
           };
+          send = sendWS;
+          sendCursor = sendWS;
           applyLikeSnapshot(msg.likes);
           flushPendingLikes();
           if (myFocus) send({ t: 'focus', card: myFocus });
           if (loc) send({ t: 'loc', loc });
+          replayCursorChat();
         } else if (msg.t === 'count') {
           paceForCount(msg.n);
           if (onCount) onCount(msg.n);
@@ -571,6 +947,7 @@ const Presence = (() => {
         dropAllPeers();
         transport = 'pending';
         send = () => {};
+        sendCursor = () => {};
         if (onCount) onCount(1);
         setTimeout(startWS, 1800);
       };
@@ -582,6 +959,88 @@ const Presence = (() => {
       );
       let opened = false;
       let myToken = null;
+      let cursorPostEpoch = 0;
+      let cursorPostActive = false;
+      let cursorPostInFlight = false;
+      let cursorPostPending = null;
+      let cursorPostController = null;
+
+      function resetCursorPosts(active = false) {
+        cursorPostEpoch += 1;
+        cursorPostActive = active;
+        cursorPostPending = null;
+        cursorPostInFlight = false;
+        cursorPostController?.abort();
+        cursorPostController = null;
+      }
+
+      function authenticatedBody(payload) {
+        return JSON.stringify({ id: myId, token: myToken, ...payload });
+      }
+
+      function sendSSEControl(payload) {
+        if (payload?.t === 'idle') {
+          // Do not let an older queued/in-flight cursor arrive after the
+          // immediate retract and make a departed pointer reappear.
+          resetCursorPosts(cursorPostActive);
+        }
+        const body = authenticatedBody(payload);
+        let accepted = false;
+        try {
+          accepted =
+            navigator.sendBeacon?.('/presence/event', body) === true;
+        } catch {
+          /* fetch below is the reliable fallback */
+        }
+        if (accepted) return;
+        fetch('/presence/event', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body,
+          keepalive: true,
+        }).catch(() => {});
+      }
+
+      function flushSSECursor() {
+        if (
+          !cursorPostActive ||
+          cursorPostInFlight ||
+          cursorPostPending === null
+        ) {
+          return;
+        }
+        const body = cursorPostPending;
+        const epoch = cursorPostEpoch;
+        cursorPostPending = null;
+        cursorPostInFlight = true;
+        cursorPostController =
+          typeof AbortController === 'function' ? new AbortController() : null;
+
+        fetch('/presence/event', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body,
+          keepalive: true,
+          ...(cursorPostController
+            ? { signal: cursorPostController.signal }
+            : {}),
+        })
+          .catch(() => {})
+          .finally(() => {
+            if (epoch !== cursorPostEpoch) return;
+            cursorPostInFlight = false;
+            cursorPostController = null;
+            flushSSECursor();
+          });
+      }
+
+      function sendSSECursor(payload) {
+        if (!cursorPostActive) return;
+        // A slow POST never builds an unbounded queue: keep only the newest
+        // serialized cursor while the current request is in flight.
+        cursorPostPending = authenticatedBody(payload);
+        flushSSECursor();
+      }
 
       es.onmessage = (e) => {
         const msg = JSON.parse(e.data);
@@ -590,23 +1049,26 @@ const Presence = (() => {
           transport = 'sse';
           myId = msg.id;
           myToken = msg.token;
-          if (onSelf) onSelf({ color: cssColor(msg.color), transport: 'sse' });
+          const colorName = COLORS.includes(msg.color)
+            ? msg.color
+            : colorForId(String(myId || clientId));
+          if (onSelf) {
+            onSelf({ color: cssColor(colorName), colorName, transport: 'sse' });
+          }
           for (const peer of msg.peers || []) {
             if (String(peer.id) === String(myId)) continue;
             if (peer.last) handle({ ...peer.last, color: peer.color });
             if (peer.loc) handle({ t: 'loc', id: peer.id, color: peer.color, loc: peer.loc });
+            if (peer.chat) handle({ t: 'chat', id: peer.id, color: peer.color, ...peer.chat });
           }
-          send = (payload) => {
-            const body = JSON.stringify({ id: myId, token: myToken, ...payload });
-            navigator.sendBeacon?.(
-              '/presence/event',
-              new Blob([body], { type: 'application/json' })
-            ) || fetch('/presence/event', { method: 'POST', body, keepalive: true });
-          };
+          resetCursorPosts(true);
+          send = sendSSEControl;
+          sendCursor = sendSSECursor;
           applyLikeSnapshot(msg.likes);
           flushPendingLikes();
           if (myFocus) send({ t: 'focus', card: myFocus });
           if (loc) send({ t: 'loc', loc });
+          replayCursorChat();
         } else if (msg.t === 'count') {
           paceForCount(msg.n);
           if (onCount) onCount(msg.n);
@@ -627,7 +1089,9 @@ const Presence = (() => {
         // just clear peers who are no longer reachable.
         dropAllPeers();
         transport = 'pending';
+        resetCursorPosts();
         send = () => {};
+        sendCursor = () => {};
         if (onCount) onCount(1);
       };
     }
@@ -638,8 +1102,13 @@ const Presence = (() => {
         bc = new BroadcastChannel('zw-playground-presence');
       } catch {
         transport = 'solo';
+        send = () => {};
+        sendCursor = () => {};
         if (onCount) onCount(1);
-        if (onSelf) onSelf({ color: '#111114', transport: 'solo' });
+        const colorName = colorForId(clientId);
+        if (onSelf) {
+          onSelf({ color: cssColor(colorName), colorName, transport: 'solo' });
+        }
         applyLikeSnapshot({
           counts: Object.fromEntries([...myLikes].map((card) => [card, 1])),
           mine: [...myLikes],
@@ -654,7 +1123,9 @@ const Presence = (() => {
         crypto.randomUUID?.() ||
         `${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
       const myColor = colorForId(myId);
-      if (onSelf) onSelf({ color: cssColor(myColor), transport: 'tabs' });
+      if (onSelf) {
+        onSelf({ color: cssColor(myColor), colorName: myColor, transport: 'tabs' });
+      }
       const alive = new Map(); // id -> lastSeen
 
       function census() {
@@ -681,13 +1152,15 @@ const Presence = (() => {
         census();
       };
 
-      send = (payload) =>
+      const sendBroadcast = (payload) =>
         bc.postMessage({
           id: myId,
           color: myColor,
           loc: loc || null,
           ...payload,
         });
+      send = sendBroadcast;
+      sendCursor = sendBroadcast;
       applyLikeSnapshot({
         counts: Object.fromEntries([...myLikes].map((card) => [card, 1])),
         mine: [...myLikes],
@@ -695,6 +1168,7 @@ const Presence = (() => {
       flushPendingLikes();
       send({ t: 'hb' });
       if (myFocus) send({ t: 'focus', card: myFocus });
+      replayCursorChat();
       setInterval(() => {
         send({ t: 'hb' });
         census();
@@ -707,44 +1181,99 @@ const Presence = (() => {
 
     // --- local input -> reports --------------------------------------------
 
-    let lastSent = 0;
-    let pending = null;
+    let lastSent = -Infinity;
+    let pointerPending = false;
+    let pointerTimer = null;
+    let pointerTimerDue = 0;
+    let latestPointer = { x: innerWidth / 2, y: innerHeight / 2 };
+
+    function pointerReportInterval(now = performance.now()) {
+      if (now < chatTrackingUntil) {
+        return sendEvery === Infinity
+          ? CHAT_MOVE_INTERVAL
+          : Math.min(sendEvery, CHAT_MOVE_INTERVAL);
+      }
+      return sendEvery;
+    }
+
+    function cancelPendingPointer() {
+      if (pointerTimer !== null) clearTimeout(pointerTimer);
+      pointerTimer = null;
+      pointerTimerDue = 0;
+      pointerPending = false;
+    }
+
+    function schedulePointer(now = performance.now()) {
+      if (!pointerPending) return;
+      const interval = pointerReportInterval(now);
+      if (interval === Infinity) {
+        cancelPendingPointer();
+        return;
+      }
+      const delay = Math.max(0, interval - (now - lastSent));
+      const due = now + delay;
+      // Keep an already-earlier trailing edge; replace only when the crowd
+      // pace or chat mode allows this latest point to go out sooner.
+      if (pointerTimer !== null && pointerTimerDue <= due + 0.5) return;
+      if (pointerTimer !== null) clearTimeout(pointerTimer);
+      pointerTimerDue = due;
+      pointerTimer = setTimeout(() => {
+        pointerTimer = null;
+        pointerTimerDue = 0;
+        flushPointer();
+      }, delay);
+    }
+
+    function flushPointer(now = performance.now()) {
+      if (!pointerPending) return;
+      const interval = pointerReportInterval(now);
+      if (interval === Infinity) {
+        cancelPendingPointer();
+        return;
+      }
+      if (now - lastSent < interval) {
+        schedulePointer(now);
+        return;
+      }
+
+      const x = latestPointer.x;
+      const y = latestPointer.y;
+      pointerPending = false;
+      lastSent = now;
+      // This runs in its own timer task, never in the pointer event or local
+      // cursor's visual RAF. Anchor layout and transport serialization cannot
+      // hold up the self-drawn pointer's transform update.
+      const position = anchorFor(x, y);
+      sendCursor({ t: 'cursor', a: position.anchor, fx: position.fx, fy: position.fy });
+      if (pointerPending) schedulePointer();
+    }
+
+    function reportPointer(x, y) {
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      latestPointer.x = Math.max(0, Math.min(innerWidth, x));
+      latestPointer.y = Math.max(0, Math.min(innerHeight, y));
+      pointerPending = true;
+      schedulePointer();
+    }
 
     addEventListener(
       'pointermove',
-      (e) => {
-        // Store only raw coords; the hit-test (elementFromPoint + layout
-        // read) runs at send rate, not pointermove rate.
-        if (sendEvery === Infinity) return; // packed room: cursors go quiet
-        pending = { x: e.clientX, y: e.clientY };
-        const now = performance.now();
-        if (now - lastSent >= sendEvery) {
-          lastSent = now;
-          const a = anchorFor(pending.x, pending.y);
-          send({ t: 'cursor', a: a.anchor, fx: a.fx, fy: a.fy });
-          pending = null;
-        }
-      },
+      (e) => reportPointer(e.clientX, e.clientY),
       { passive: true }
     );
 
-    // flush trailing position so cursors don't stop short
-    setInterval(() => {
-      if (pending && sendEvery !== Infinity && performance.now() - lastSent >= sendEvery) {
-        lastSent = performance.now();
-        const a = anchorFor(pending.x, pending.y);
-        send({ t: 'cursor', a: a.anchor, fx: a.fx, fy: a.fy });
-        pending = null;
-      }
-    }, 40); // trailing-flush granularity: tight enough for the realtime tier
-
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden) send({ t: 'idle' });
+      if (!document.hidden) return;
+      cancelPendingPointer();
+      send({ t: 'idle' });
     });
 
     // A cursor frozen mid-page reads as a bug; retract it when the pointer
     // actually leaves the window.
-    document.documentElement.addEventListener('mouseleave', () => send({ t: 'idle' }));
+    document.documentElement.addEventListener('mouseleave', () => {
+      cancelPendingPointer();
+      send({ t: 'idle' });
+    });
 
     return {
       focus(card) {
@@ -772,6 +1301,33 @@ const Presence = (() => {
       },
       say(text) {
         send({ t: 'bullet', text });
+      },
+      cursorChat({ session, seq, text, x, y, ttlMs = CHAT_TTL } = {}) {
+        if (!CHAT_SESSION_RE.test(session || '') || !Number.isSafeInteger(seq) || seq <= 0) {
+          return;
+        }
+        const safeText = normalizeChatText(text);
+        const point = {
+          x: Number.isFinite(x) ? Math.max(0, Math.min(innerWidth, x)) : latestPointer.x,
+          y: Number.isFinite(y) ? Math.max(0, Math.min(innerHeight, y)) : latestPointer.y,
+        };
+        const ttl = Math.max(1, Math.min(CHAT_TTL, Number(ttlMs) || CHAT_TTL));
+        const snapshot = { session, seq, text: safeText, ...point };
+
+        if (safeText && safeText.trim() !== '') {
+          snapshot.expiresAt = Date.now() + ttl;
+          chatReplay = snapshot;
+          chatTrackingUntil = performance.now() + ttl;
+        } else {
+          snapshot.text = '';
+          chatReplay = null;
+          chatTrackingUntil = 0;
+        }
+
+        send(chatWirePayload(snapshot, ttl));
+      },
+      pointerMove(x, y) {
+        reportPointer(x, y);
       },
       spray(on) {
         send({ t: 'spray', on: on ? 1 : 0 });

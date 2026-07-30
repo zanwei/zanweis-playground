@@ -7,6 +7,7 @@
   --duration-stagger: 40ms;
   --duration-quick: 150ms;
   --duration-fast: 250ms;
+  --duration-cursor-chat: 320ms;
   --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1); /* strong ease-out for UI */
   --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
@@ -249,8 +250,12 @@ html.revealing .sheet {
 
 .shell {
   /* Full-bleed: the masonry's fluid columns absorb whatever width the
-     window offers, so wide displays get more columns, not gutters. */
-  padding: 0 max(16px, env(safe-area-inset-right)) 16px max(16px, env(safe-area-inset-left));
+     window offers, so wide displays get more columns, not gutters. The
+     persistent Bullet dock owns the bottom chrome, so reserve its footprint. */
+  padding:
+    0 max(16px, env(safe-area-inset-right))
+    calc(96px + env(safe-area-inset-bottom))
+    max(16px, env(safe-area-inset-left));
 }
 
 /* --------------------------------------------------------------- topbar */
@@ -612,7 +617,7 @@ html.revealing .sheet {
 }
 
 /* Static artwork and motion posters fill their card surface. */
-.figma-thumb,
+.static-thumb,
 .video-thumb {
   position: absolute;
   inset: 0;
@@ -1209,6 +1214,10 @@ html.revealing .sheet {
   transition: opacity var(--duration-fast) var(--ease-smooth-out);
 }
 
+.playground-frame:not(.is-ready) {
+  pointer-events: none;
+}
+
 .playground-frame.is-ready {
   opacity: 1;
 }
@@ -1306,6 +1315,7 @@ html.revealing .sheet {
   position: fixed;
   inset: 0;
   z-index: 900;
+  contain: layout paint;
   pointer-events: none;
   overflow: hidden;
 }
@@ -1318,7 +1328,6 @@ html.revealing .sheet {
   top: 0;
   left: 0;
   will-change: transform;
-  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.25));
 }
 
 .presence-cursor-inner {
@@ -1346,6 +1355,182 @@ html.revealing .sheet {
   transform: translate(-4px, -3px); /* hotspot on the arrow tip */
 }
 
+.presence-cursor svg {
+  filter:
+    drop-shadow(0 1px 1px rgba(17, 17, 20, 0.3))
+    drop-shadow(0 3px 5px rgba(17, 17, 20, 0.18));
+}
+
+/* Figma-style cursor chat. The positioned node receives its transform inline:
+   pointer following is functional and must never lag behind a transition. */
+
+.cursor-chat-bubble {
+  --cursor-chat-500: oklch(70.5% 0.213 47.604);
+  --cursor-chat-600: oklch(64.6% 0.222 41.116);
+  --cursor-chat-ink: oklch(0% 0 0);
+  position: absolute;
+  top: 0;
+  left: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  max-width: min(328px, calc(100vw - 24px));
+  padding: 6px 12px;
+  border: 2px solid var(--cursor-chat-600);
+  border-radius: 16px;
+  background: var(--cursor-chat-500);
+  box-shadow:
+    0 3px 7px rgba(17, 17, 20, 0.14),
+    0 14px 32px rgba(17, 17, 20, 0.2);
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity var(--duration-cursor-chat) var(--ease-out);
+}
+
+.cursor-chat-bubble[data-chat-color='violet'] {
+  --cursor-chat-500: oklch(60.6% 0.25 292.717);
+  --cursor-chat-600: oklch(54.1% 0.281 293.009);
+  --cursor-chat-ink: oklch(0% 0 0);
+}
+
+.cursor-chat-bubble[data-chat-color='green'] {
+  --cursor-chat-500: oklch(72.3% 0.219 149.579);
+  --cursor-chat-600: oklch(62.7% 0.194 149.214);
+  --cursor-chat-ink: oklch(0% 0 0);
+}
+
+.cursor-chat-bubble[data-chat-color='pink'] {
+  --cursor-chat-500: oklch(65.6% 0.241 354.308);
+  --cursor-chat-600: oklch(59.2% 0.249 0.584);
+  --cursor-chat-ink: oklch(0% 0 0);
+}
+
+.cursor-chat-bubble[data-chat-color='blue'] {
+  --cursor-chat-500: oklch(62.3% 0.214 259.815);
+  --cursor-chat-600: oklch(54.6% 0.245 262.881);
+  --cursor-chat-ink: oklch(0% 0 0);
+}
+
+.cursor-chat-bubble[data-chat-color='amber'] {
+  --cursor-chat-500: oklch(76.9% 0.188 70.08);
+  --cursor-chat-600: oklch(66.6% 0.179 58.318);
+  --cursor-chat-ink: oklch(0% 0 0);
+}
+
+/* Local chat stays neutral; remote palettes above use the higher-contrast
+   black ink at their 500 stops. Neutral 500 is the one stop where white wins. */
+.cursor-chat-bubble.cursor-chat-local-bubble {
+  --cursor-chat-500: oklch(55.6% 0 0);
+  --cursor-chat-600: oklch(43.9% 0 0);
+  --cursor-chat-ink: oklch(100% 0 0);
+}
+
+.cursor-chat-bubble[hidden] {
+  display: none;
+}
+
+.cursor-chat-bubble.is-out {
+  opacity: 0;
+}
+
+.cursor-chat-text {
+  max-width: 298px;
+  overflow: hidden;
+  color: var(--cursor-chat-ink);
+  font-size: 14px;
+  font-weight: 450;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: pre;
+}
+
+/* The local input must not live under .presence-overlay's aria-hidden tree.
+   Its outer carrier moves directly; its inner bubble owns only the exit fade. */
+.cursor-chat-local {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1100;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.cursor-chat-local[hidden] {
+  display: none;
+}
+
+.has-custom-cursor,
+.has-custom-cursor *,
+.has-custom-cursor *::before,
+.has-custom-cursor *::after {
+  cursor: var(--site-custom-cursor, default) !important;
+}
+
+.has-custom-cursor.has-dom-cursor,
+.has-custom-cursor.has-dom-cursor *,
+.has-custom-cursor.has-dom-cursor *::before,
+.has-custom-cursor.has-dom-cursor *::after {
+  cursor: none !important;
+}
+
+.site-cursor {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  color: #111114;
+  pointer-events: none;
+}
+
+.site-cursor svg {
+  display: block;
+  transform: translate(-4px, -3px);
+}
+
+.cursor-chat-local-bubble {
+  max-width: none;
+}
+
+.cursor-chat-input {
+  width: var(--cursor-chat-input-width, 96px);
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--cursor-chat-ink);
+  caret-color: var(--cursor-chat-600);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 450;
+  line-height: 1.25;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.cursor-chat-input::placeholder {
+  color: color-mix(in oklch, var(--cursor-chat-ink) 62%, transparent);
+  opacity: 1;
+}
+
+.cursor-chat-input::selection {
+  background: color-mix(in oklch, var(--cursor-chat-600) 26%, transparent);
+}
+
+.cursor-chat-mirror {
+  position: absolute;
+  visibility: hidden;
+  white-space: pre;
+  pointer-events: none;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 450;
+  line-height: 1.25;
+}
+
 /* Bullet screen: capsules cross the screen at constant speed (linear — the
    correct easing for steady motion). Hover pauses the flight so the Close
    button holds still under the pointer. */
@@ -1356,6 +1541,17 @@ html.revealing .sheet {
   z-index: 800;
   pointer-events: none;
   overflow: hidden;
+}
+
+/* Social chrome lives outside the rising .sheet. Keep every bullet surface
+   concealed while the scaled loader exposes its perimeter. */
+html.booting .bullet-layer,
+html.revealing .bullet-layer,
+html.booting .bullet-overflow,
+html.revealing .bullet-overflow,
+html.booting .chat-dock,
+html.revealing .chat-dock {
+  visibility: hidden;
 }
 
 @keyframes bullet-fly {
@@ -1453,15 +1649,19 @@ html.revealing .sheet {
   align-items: stretch;
   gap: 8px;
   opacity: 0;
-  transform: translateY(12px);
+  transform: translate3d(0, calc(100% + 32px), 0);
   transition:
-    opacity var(--duration-fast) var(--ease-smooth-out),
-    transform var(--duration-fast) var(--ease-smooth-out);
+    opacity 180ms var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+
+.chat-dock[hidden] {
+  display: none;
 }
 
 .chat-dock.is-on {
   opacity: 1;
-  transform: translateY(0);
+  transform: translate3d(0, 0, 0);
 }
 
 .chat-dock.is-instant {
@@ -1570,7 +1770,7 @@ html.revealing .sheet {
   gap: 14px;
 }
 
-/* Topbar keyboard hint: a quiet chip that also opens Bullet screen. */
+/* Topbar keyboard hint: a quiet, discoverable entry into cursor chat. */
 
 .chat-hint {
   display: inline-flex;
@@ -1596,6 +1796,12 @@ html.revealing .sheet {
 
 .chat-hint:active {
   transform: scale(0.97);
+}
+
+@media (pointer: coarse), (pointer: none) {
+  .chat-hint {
+    display: none;
+  }
 }
 
 /* Keycap: concentric with the pill (pill h28 r14, 5px inset -> r9 would be
@@ -1765,6 +1971,10 @@ html.revealing .sheet {
    starts competing with the message field. Keep the display control in the
    thumb-friendly row above, while the input remains full-width below. */
 @media (max-width: 720px) {
+  .shell {
+    padding-bottom: calc(148px + env(safe-area-inset-bottom));
+  }
+
   .chat-dock {
     left: 32px;
     right: 32px;
@@ -1792,6 +2002,10 @@ html.revealing .sheet {
     /* iOS zooms focused form fields below 16px, which can move this fixed
        composer outside the visual viewport while the keyboard animates. */
     font-size: 16px;
+  }
+
+  .bullet-overflow {
+    bottom: calc(136px + env(safe-area-inset-bottom));
   }
 }
 

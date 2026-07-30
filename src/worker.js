@@ -62,9 +62,16 @@ const MAX_PEERS = 1200;
 const REALTIME_MAX = 12; // small rooms relay per-event, live
 const TICK_MS = 50;
 const TICK_CURSOR_CAP = 40;
+const TICK_CHAT_CAP = 20;
 const CURSOR_MIN_MS = 30;
 const CURSOR_MIN_RT_MS = 15;
 const META_MIN_MS = 900;
+const CHAT_TTL_MS = 5000;
+const CHAT_RATE_PER_SEC = 25;
+const CHAT_RATE_BURST = 8;
+const CHAT_SESSION_HISTORY_CAP = 64;
+const CHAT_SESSION_RE = /^[A-Za-z0-9_-]{8,64}$/;
+const CHAT_ANCHOR_RE = /^(?:page|(?:card|shell):[A-Za-z0-9_-]{1,64})$/;
 const BULLET_BURST = 3;
 const BULLET_REFILL_MS = 2500;
 const BULLET_GLOBAL_PER_SEC = 25;
@@ -89,9 +96,124 @@ const LIKE_CARDS = new Set([
   'affine-logo',
   'affine-hero',
   'bridge',
+  'shoedex-sign-in',
+  'shoedex-scan-button',
+  'whiteboard-1',
+  'whiteboard-2',
+  'whiteboard-3',
+  'whiteboard-4',
 ]);
 const CLIENT_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 const PUBLIC_ID_RE = /^p\.[0-9a-f-]{36}$/i;
+
+function parseChatMessage(msg) {
+  if (
+    typeof msg.session !== 'string' ||
+    !CHAT_SESSION_RE.test(msg.session) ||
+    !Number.isSafeInteger(msg.seq) ||
+    msg.seq <= 0 ||
+    typeof msg.text !== 'string'
+  ) {
+    return null;
+  }
+
+  const text = Array.from(msg.text.replace(/[\u0000-\u001F\u007F]/g, ''))
+    .slice(0, 120)
+    .join('');
+  if (!text.trim()) return { session: msg.session, seq: msg.seq, text: '' };
+  if (
+    typeof msg.a !== 'string' ||
+    !CHAT_ANCHOR_RE.test(msg.a) ||
+    !Number.isFinite(msg.fx) ||
+    !Number.isFinite(msg.fy) ||
+    !Number.isFinite(msg.ttlMs)
+  ) {
+    return null;
+  }
+
+  return {
+    session: msg.session,
+    seq: msg.seq,
+    text,
+    a: msg.a,
+    fx: msg.fx,
+    fy: msg.fy,
+    ttlMs: Math.max(1, Math.min(CHAT_TTL_MS, Math.floor(msg.ttlMs))),
+  };
+}
+
+function restoredChat(raw, now = Date.now()) {
+  if (
+    !raw ||
+    typeof raw.session !== 'string' ||
+    !CHAT_SESSION_RE.test(raw.session) ||
+    !Number.isSafeInteger(raw.rev) ||
+    raw.rev <= 0 ||
+    typeof raw.text !== 'string' ||
+    typeof raw.a !== 'string' ||
+    !CHAT_ANCHOR_RE.test(raw.a) ||
+    !Number.isFinite(raw.fx) ||
+    !Number.isFinite(raw.fy) ||
+    !Number.isFinite(raw.expiresAt) ||
+    raw.expiresAt <= now
+  ) {
+    return null;
+  }
+  const text = Array.from(raw.text.replace(/[\u0000-\u001F\u007F]/g, ''))
+    .slice(0, 120)
+    .join('');
+  if (!text.trim()) return null;
+  return {
+    session: raw.session,
+    rev: raw.rev,
+    text,
+    a: raw.a,
+    fx: raw.fx,
+    fy: raw.fy,
+    expiresAt: Math.min(raw.expiresAt, now + CHAT_TTL_MS),
+  };
+}
+
+function restoredChatSeqs(raw, protectedSession = null) {
+  const sequences = new Map();
+  if (!Array.isArray(raw)) return sequences;
+  for (const entry of raw) {
+    if (
+      Array.isArray(entry) &&
+      typeof entry[0] === 'string' &&
+      CHAT_SESSION_RE.test(entry[0]) &&
+      Number.isSafeInteger(entry[1]) &&
+      entry[1] > 0
+    ) {
+      sequences.set(entry[0], Math.max(sequences.get(entry[0]) || 0, entry[1]));
+    }
+  }
+  while (sequences.size > CHAT_SESSION_HISTORY_CAP) {
+    const oldest = sequences.keys().next().value;
+    if (oldest === protectedSession) {
+      const activeSeq = sequences.get(oldest);
+      sequences.delete(oldest);
+      sequences.set(oldest, activeSeq);
+      continue;
+    }
+    sequences.delete(oldest);
+  }
+  return sequences;
+}
+
+function restoredSupersededChatSessions(raw) {
+  const sessions = new Set();
+  if (!Array.isArray(raw)) return sessions;
+  for (const session of raw) {
+    if (typeof session === 'string' && CHAT_SESSION_RE.test(session)) {
+      sessions.add(session);
+      while (sessions.size > CHAT_SESSION_HISTORY_CAP) {
+        sessions.delete(sessions.values().next().value);
+      }
+    }
+  }
+  return sessions;
+}
 
 function colorForPublicId(publicId) {
   let hash = 2166136261;
@@ -108,7 +230,10 @@ export class PresenceRoom {
     this.peers = new Map(); // ws -> { user }
     this.users = new Map(); // stable client id -> aggregate user record
     this.closedSockets = new WeakSet();
+    this.failedSockets = new Set();
+    this.failedDropScheduled = false;
     this.pendingCursors = new Map(); // id -> { a, fx, fy }
+    this.pendingChats = new Map(); // id -> latest unexpired chat snapshot
     this.pendingLikeCounts = new Map(); // card -> latest authoritative count
     this.countDirty = false;
     this.tickTimer = null;
@@ -166,6 +291,7 @@ export class PresenceRoom {
         rawLast && rawLast.t === 'cursor'
           ? { ...rawLast, id: user.id }
           : null;
+      const savedChat = restoredChat(saved.chat);
       const connection = {
         user,
         idle: saved.idle !== false,
@@ -178,17 +304,31 @@ export class PresenceRoom {
         locAt: 0,
         spray: !!saved.spray,
         sprayAt: 0,
+        chat: savedChat,
+        chatSeqs: restoredChatSeqs(saved.chatSeqs, savedChat?.session),
+        supersededChatSessions: restoredSupersededChatSessions(
+          saved.chatSupersededSessions
+        ),
+        chatTokens: CHAT_RATE_BURST,
+        chatTokenAt: 0,
+        attachmentDirty: false,
       };
+      if (savedChat) connection.supersededChatSessions.delete(savedChat.session);
       this.activitySequence = Math.max(
         this.activitySequence,
         restoredStateSeq,
         connection.cursorSeq,
-        connection.focusSeq
+        connection.focusSeq,
+        connection.chat?.rev || 0
       );
       user.connections.add(ws);
       this.peers.set(ws, connection);
     }
-    for (const user of this.users.values()) this.syncUserState(user, false);
+    for (const user of this.users.values()) {
+      this.restoreUserChat(user);
+      this.syncUserState(user, false);
+      this.persistUser(user, true);
+    }
   }
 
   publicIdInUse(publicId) {
@@ -222,6 +362,7 @@ export class PresenceRoom {
       idle: true,
       focus: null,
       spray: false,
+      chat: null,
       stateSeq: 0,
       likeAt: 0,
       bTokens: BULLET_BURST,
@@ -231,31 +372,57 @@ export class PresenceRoom {
     return user;
   }
 
-  persistUser(user) {
+  persistConnection(ws, connection = this.peers.get(ws)) {
+    if (!connection) return false;
+    const { user } = connection;
+    try {
+      ws.serializeAttachment({
+        clientId: user.clientId,
+        userId: user.id,
+        stateSeq: user.stateSeq,
+        loc: user.loc,
+        lastEvent: user.lastEvent,
+        idle: user.idle,
+        focus: user.focus,
+        spray: user.spray,
+        connection: {
+          idle: connection.idle,
+          lastEvent: connection.lastEvent,
+          cursorSeq: connection.cursorSeq,
+          focus: connection.focus,
+          focusSeq: connection.focusSeq,
+          spray: connection.spray,
+          chat: connection.chat,
+          chatSeqs: [...(connection.chatSeqs || [])],
+          chatSupersededSessions: [...(connection.supersededChatSessions || [])],
+        },
+      });
+      connection.attachmentDirty = false;
+      return true;
+    } catch {
+      connection.attachmentDirty = true;
+      return false;
+    }
+  }
+
+  persistUser(user, evictOnFailure = false) {
     for (const ws of user.connections) {
+      if (!this.persistConnection(ws) && evictOnFailure) {
+        this.queueFailedSocket(ws);
+      }
+    }
+  }
+
+  persistChatChanges(user, currentWs) {
+    if (!this.persistConnection(currentWs)) this.queueFailedSocket(currentWs);
+    for (const ws of user.connections) {
+      if (ws === currentWs) continue;
       const connection = this.peers.get(ws);
-      if (!connection) continue;
-      try {
-        ws.serializeAttachment({
-          clientId: user.clientId,
-          userId: user.id,
-          stateSeq: user.stateSeq,
-          loc: user.loc,
-          lastEvent: user.lastEvent,
-          idle: user.idle,
-          focus: user.focus,
-          spray: user.spray,
-          connection: {
-            idle: connection.idle,
-            lastEvent: connection.lastEvent,
-            cursorSeq: connection.cursorSeq,
-            focus: connection.focus,
-            focusSeq: connection.focusSeq,
-            spray: connection.spray,
-          },
-        });
-      } catch {
-        /* the live socket remains usable; the next state change retries */
+      if (
+        connection?.attachmentDirty &&
+        !this.persistConnection(ws, connection)
+      ) {
+        this.queueFailedSocket(ws);
       }
     }
   }
@@ -267,6 +434,193 @@ export class PresenceRoom {
       if (connection) records.push(connection);
     }
     return records;
+  }
+
+  chatEntry(user, chat, now = Date.now()) {
+    if (!chat) return null;
+    const ttlMs = Math.min(CHAT_TTL_MS, Math.ceil(chat.expiresAt - now));
+    if (ttlMs <= 0) return null;
+    return {
+      id: user.id,
+      rev: chat.rev,
+      text: chat.text,
+      a: chat.a,
+      fx: chat.fx,
+      fy: chat.fy,
+      color: user.color,
+      ttlMs,
+    };
+  }
+
+  chatRosterEntry(user, now = Date.now()) {
+    const entry = this.chatEntry(user, user.chat, now);
+    if (!entry) return null;
+    const { id: _id, color: _color, ...snapshot } = entry;
+    return snapshot;
+  }
+
+  restoreUserChat(user) {
+    const now = Date.now();
+    let owner = null;
+    let latest = null;
+    for (const connection of this.connectionRecords(user)) {
+      if (!connection.chat || connection.chat.expiresAt <= now) {
+        connection.chat = null;
+        continue;
+      }
+      if (!latest || connection.chat.rev > latest.rev) {
+        owner = connection;
+        latest = connection.chat;
+      }
+    }
+    for (const connection of this.connectionRecords(user)) {
+      if (connection !== owner && connection.chat) this.supersedeConnectionChat(connection);
+    }
+    user.chat = latest ? { ...latest, owner } : null;
+    if (latest) {
+      user.stateSeq = Math.max(user.stateSeq, latest.rev);
+      this.activitySequence = Math.max(this.activitySequence, latest.rev);
+    }
+  }
+
+  acceptChatSequence(connection, session, seq) {
+    if (!(connection.chatSeqs instanceof Map)) connection.chatSeqs = new Map();
+    const previous = connection.chatSeqs.get(session) || 0;
+    if (seq <= previous) return false;
+    connection.chatSeqs.set(session, seq);
+    while (connection.chatSeqs.size > CHAT_SESSION_HISTORY_CAP) {
+      const oldest = connection.chatSeqs.keys().next().value;
+      if (oldest === connection.chat?.session) {
+        const activeSeq = connection.chatSeqs.get(oldest);
+        connection.chatSeqs.delete(oldest);
+        connection.chatSeqs.set(oldest, activeSeq);
+        continue;
+      }
+      connection.chatSeqs.delete(oldest);
+    }
+    return true;
+  }
+
+  supersedeConnectionChat(connection) {
+    if (!connection.chat) return;
+    if (!(connection.supersededChatSessions instanceof Set)) {
+      connection.supersededChatSessions = new Set();
+    }
+    connection.supersededChatSessions.add(connection.chat.session);
+    connection.chat = null;
+    connection.attachmentDirty = true;
+    while (connection.supersededChatSessions.size > CHAT_SESSION_HISTORY_CAP) {
+      connection.supersededChatSessions.delete(
+        connection.supersededChatSessions.values().next().value
+      );
+    }
+  }
+
+  isRealtimeRoom() {
+    return (
+      this.users.size <= REALTIME_MAX &&
+      this.peers.size <= REALTIME_MAX
+    );
+  }
+
+  chatBudgetOk(connection, now) {
+    const elapsed = Math.max(0, now - connection.chatTokenAt);
+    connection.chatTokens = Math.min(
+      CHAT_RATE_BURST,
+      connection.chatTokens + (elapsed * CHAT_RATE_PER_SEC) / 1000
+    );
+    connection.chatTokenAt = now;
+    if (connection.chatTokens < 1) return false;
+    connection.chatTokens -= 1;
+    return true;
+  }
+
+  publishChat(user, chat, now = Date.now()) {
+    const entry = this.chatEntry(user, chat, now);
+    if (!entry) return;
+    if (this.isRealtimeRoom()) {
+      this.pendingChats.delete(user.id);
+      this.cancelTickIfIdle();
+      this.broadcast({ t: 'chat', ...entry }, user.id);
+    } else {
+      this.pendingChats.set(user.id, { ...entry, expiresAt: chat.expiresAt });
+      this.ensureTick();
+    }
+  }
+
+  clearOwnedChat(user, connection, session = null) {
+    const current = user.chat;
+    if (
+      !current ||
+      current.owner !== connection ||
+      (session !== null && current.session !== session)
+    ) {
+      if (connection.chat?.session === session) connection.chat = null;
+      return false;
+    }
+
+    connection.chat = null;
+    user.chat = null;
+    this.pendingChats.delete(user.id);
+    const rev = ++this.activitySequence;
+    user.stateSeq = rev;
+    this.broadcast(
+      {
+        t: 'chat',
+        id: user.id,
+        rev,
+        text: '',
+        a: current.a,
+        fx: current.fx,
+        fy: current.fy,
+        color: user.color,
+        ttlMs: 0,
+      },
+      user.id
+    );
+    this.cancelTickIfIdle();
+    return true;
+  }
+
+  applyChat(user, connection, parsed, now) {
+    if (!this.acceptChatSequence(connection, parsed.session, parsed.seq)) return false;
+    if (!(connection.supersededChatSessions instanceof Set)) {
+      connection.supersededChatSessions = new Set();
+    }
+    if (connection.supersededChatSessions.has(parsed.session)) return true;
+
+    if (!parsed.text) {
+      this.clearOwnedChat(user, connection, parsed.session);
+      return true;
+    }
+    if (!this.isRealtimeRoom() && !this.chatBudgetOk(connection, now)) {
+      return true;
+    }
+
+    // One public user owns one cursor-chat bubble. Superseded sibling state is
+    // cleared so a later close or hibernation restore cannot resurrect it.
+    for (const record of this.connectionRecords(user)) {
+      if (record.chat && (record !== connection || record.chat.session !== parsed.session)) {
+        this.supersedeConnectionChat(record);
+      }
+    }
+
+    const chat = {
+      session: parsed.session,
+      rev: ++this.activitySequence,
+      text: parsed.text,
+      a: parsed.a,
+      fx: parsed.fx,
+      fy: parsed.fy,
+      expiresAt: now + parsed.ttlMs,
+    };
+    connection.chat = chat;
+    connection.idle = false;
+    user.chat = { ...chat, owner: connection };
+    user.idle = false;
+    user.stateSeq = chat.rev;
+    this.publishChat(user, user.chat, now);
+    return true;
   }
 
   syncUserState(user, broadcastChanges = true) {
@@ -342,25 +696,72 @@ export class PresenceRoom {
       { t: 'spray', id: current.id, on: current.spray ? 1 : 0 },
       current.id
     );
+    this.pendingChats.delete(current.id);
+    const currentChat = this.chatEntry(current, current.chat);
+    if (currentChat) {
+      this.broadcast({ t: 'chat', ...currentChat }, current.id);
+    } else {
+      const rev = ++this.activitySequence;
+      current.stateSeq = rev;
+      this.broadcast(
+        {
+          t: 'chat',
+          id: current.id,
+          rev,
+          text: '',
+          a: currentLast?.a || 'page',
+          fx: currentLast?.fx || 0,
+          fy: currentLast?.fy || 0,
+          color: current.color,
+          ttlMs: 0,
+        },
+        current.id
+      );
+    }
+    this.persistUser(current, true);
     this.cancelTickIfIdle();
   }
 
+  queueFailedSocket(ws) {
+    if (this.closedSockets.has(ws) || this.failedSockets.has(ws)) return;
+    this.failedSockets.add(ws);
+    this.scheduleFailedSocketDrops();
+  }
+
+  scheduleFailedSocketDrops() {
+    if (this.failedDropScheduled) return;
+    this.failedDropScheduled = true;
+    queueMicrotask(() => {
+      const failed = [...this.failedSockets];
+      for (const failedSocket of failed) this.drop(failedSocket);
+      for (const failedSocket of failed) this.failedSockets.delete(failedSocket);
+      this.failedDropScheduled = false;
+      if (this.failedSockets.size) this.scheduleFailedSocketDrops();
+    });
+  }
+
   send(ws, payload) {
+    if (this.failedSockets.has(ws)) return;
     try {
       ws.send(JSON.stringify(payload));
     } catch {
-      this.drop(ws);
+      this.queueFailedSocket(ws);
     }
   }
 
   broadcast(payload, exceptUserId) {
     const line = JSON.stringify(payload);
     for (const [ws, connection] of this.peers) {
-      if (connection.user.id === exceptUserId) continue;
+      if (
+        connection.user.id === exceptUserId ||
+        this.failedSockets.has(ws)
+      ) {
+        continue;
+      }
       try {
         ws.send(line);
       } catch {
-        this.drop(ws);
+        this.queueFailedSocket(ws);
       }
     }
   }
@@ -449,6 +850,26 @@ export class PresenceRoom {
       }
 
       this.pendingCursors.delete(userId);
+      this.pendingChats.delete(userId);
+      const detachedChat = restoredChat(attachment?.connection?.chat);
+      if (detachedChat) {
+        const rev = Math.max(this.activitySequence + 1, detachedChat.rev + 1);
+        this.activitySequence = rev;
+        this.broadcast(
+          {
+            t: 'chat',
+            id: userId,
+            rev,
+            text: '',
+            a: detachedChat.a,
+            fx: detachedChat.fx,
+            fy: detachedChat.fy,
+            color: colorForPublicId(userId),
+            ttlMs: 0,
+          },
+          userId
+        );
+      }
       if (attachment?.connection?.spray) {
         this.broadcast({ t: 'spray', id: userId, on: 0 }, userId);
       }
@@ -461,6 +882,7 @@ export class PresenceRoom {
 
     const { user } = connection;
     user.connections.delete(ws);
+    this.clearOwnedChat(user, connection);
     try {
       ws.close();
     } catch {
@@ -470,7 +892,7 @@ export class PresenceRoom {
     if (user.connections.size > 0) {
       user.stateSeq = ++this.activitySequence;
       this.syncUserState(user);
-      this.persistUser(user);
+      this.persistUser(user, true);
       return;
     }
 
@@ -480,6 +902,7 @@ export class PresenceRoom {
     if (this.users.get(user.clientId) !== user) return;
     this.users.delete(user.clientId);
     this.pendingCursors.delete(user.id);
+    this.pendingChats.delete(user.id);
     if (user.spray) this.broadcast({ t: 'spray', id: user.id, on: 0 }, user.id);
     this.broadcast({ t: 'leave', id: user.id });
     this.countDirty = true;
@@ -492,6 +915,7 @@ export class PresenceRoom {
     if (this.peers.size === 0) {
       this.countDirty = false;
       this.pendingCursors.clear();
+      this.pendingChats.clear();
       this.pendingLikeCounts.clear();
       return;
     }
@@ -503,6 +927,20 @@ export class PresenceRoom {
       const counts = Object.fromEntries(this.pendingLikeCounts);
       this.pendingLikeCounts.clear();
       this.broadcast({ t: 'likes', counts });
+    }
+    if (this.pendingChats.size) {
+      const now = Date.now();
+      const list = [];
+      for (const [id, chat] of this.pendingChats) {
+        this.pendingChats.delete(id);
+        const ttlMs = Math.min(CHAT_TTL_MS, Math.ceil(chat.expiresAt - now));
+        if (ttlMs > 0) {
+          const { expiresAt: _expiresAt, ...entry } = chat;
+          list.push({ ...entry, ttlMs });
+        }
+        if (list.length >= TICK_CHAT_CAP) break;
+      }
+      if (list.length) this.broadcast({ t: 'chats', list });
     }
     if (this.pendingCursors.size) {
       const list = [];
@@ -522,11 +960,19 @@ export class PresenceRoom {
       this.tickTimer = null;
       this.countDirty = false;
       this.pendingCursors.clear();
+      this.pendingChats.clear();
       this.pendingLikeCounts.clear();
       return;
     }
     if (this.tickTimer !== null) return;
-    if (!this.countDirty && !this.pendingLikeCounts.size && !this.pendingCursors.size) return;
+    if (
+      !this.countDirty &&
+      !this.pendingLikeCounts.size &&
+      !this.pendingCursors.size &&
+      !this.pendingChats.size
+    ) {
+      return;
+    }
     this.tickTimer = setTimeout(() => this.tick(), TICK_MS);
   }
 
@@ -535,7 +981,8 @@ export class PresenceRoom {
       this.tickTimer !== null &&
       !this.countDirty &&
       !this.pendingLikeCounts.size &&
-      !this.pendingCursors.size
+      !this.pendingCursors.size &&
+      !this.pendingChats.size
     ) {
       clearTimeout(this.tickTimer);
       this.tickTimer = null;
@@ -562,6 +1009,7 @@ export class PresenceRoom {
     const likes = await this.likesSnapshot(clientId);
     const isNewUser = !this.users.has(clientId);
     const user = this.userFor(clientId);
+    const now = Date.now();
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
@@ -576,6 +1024,7 @@ export class PresenceRoom {
         color: other.color,
         last: other.lastEvent || null,
         loc: other.loc || null,
+        chat: this.chatRosterEntry(other, now),
       });
     }
 
@@ -591,6 +1040,12 @@ export class PresenceRoom {
       locAt: 0,
       spray: false,
       sprayAt: 0,
+      chat: null,
+      chatSeqs: new Map(),
+      supersededChatSessions: new Set(),
+      chatTokens: CHAT_RATE_BURST,
+      chatTokenAt: 0,
+      attachmentDirty: false,
     };
     this.peers.set(server, connection);
     user.connections.add(server);
@@ -628,7 +1083,7 @@ export class PresenceRoom {
 
     switch (msg.t) {
       case 'cursor': {
-        const realtime = this.users.size <= REALTIME_MAX;
+        const realtime = this.isRealtimeRoom();
         const floor = realtime ? CURSOR_MIN_RT_MS : CURSOR_MIN_MS;
         if (now - connection.cursorAt < floor) break;
         connection.cursorAt = now;
@@ -648,7 +1103,7 @@ export class PresenceRoom {
           this.pendingCursors.set(id, { ...entry, color: user.color });
           this.ensureTick();
         }
-        this.persistUser(user);
+        this.persistConnection(ws, connection);
         break;
       }
       case 'bullet': {
@@ -661,6 +1116,12 @@ export class PresenceRoom {
         user.bTokens--;
         if (typeof msg.text !== 'string' || !msg.text) break;
         this.broadcast({ t: 'bullet', id, text: msg.text.slice(0, 120), color: user.color }, id);
+        break;
+      }
+      case 'chat': {
+        const parsed = parseChatMessage(msg);
+        if (!parsed || !this.applyChat(user, connection, parsed, now)) break;
+        this.persistChatChanges(user, ws);
         break;
       }
       case 'focus':
@@ -683,7 +1144,7 @@ export class PresenceRoom {
           user.loc = msg.loc || null;
           this.broadcast({ t: 'loc', loc: user.loc, id, color: user.color }, id);
         }
-        this.persistUser(user);
+        this.persistConnection(ws, connection);
         break;
       }
       case 'spray': {
@@ -692,15 +1153,21 @@ export class PresenceRoom {
         connection.spray = !!msg.on;
         user.stateSeq = ++this.activitySequence;
         this.syncUserState(user);
-        this.persistUser(user);
+        this.persistConnection(ws, connection);
         break;
       }
       case 'idle': {
+        const clearedChat = this.clearOwnedChat(user, connection);
         if (!connection.idle) {
           connection.idle = true;
           user.stateSeq = ++this.activitySequence;
           this.syncUserState(user);
-          this.persistUser(user);
+          const persisted = this.persistConnection(ws, connection);
+          if (clearedChat && !persisted) this.queueFailedSocket(ws);
+        } else if (clearedChat) {
+          if (!this.persistConnection(ws, connection)) {
+            this.queueFailedSocket(ws);
+          }
         }
         break;
       }
