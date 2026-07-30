@@ -1227,11 +1227,13 @@ const Social = (() => {
 
   function ensureCustomCursorDocumentStyle(policy) {
     const frameDocument = policy.document;
+    const styleParent = frameDocument.head || frameDocument.documentElement;
+    if (!styleParent) return;
     let style = frameDocument.querySelector(`style[${CUSTOM_CURSOR_STYLE_ATTR}]`);
     if (!style) {
       style = frameDocument.createElement('style');
       style.setAttribute(CUSTOM_CURSOR_STYLE_ATTR, '');
-      (frameDocument.head || frameDocument.documentElement).appendChild(style);
+      styleParent.appendChild(style);
     }
     if (style.textContent !== CUSTOM_CURSOR_DOCUMENT_CSS) {
       style.textContent = CUSTOM_CURSOR_DOCUMENT_CSS;
@@ -1359,10 +1361,16 @@ const Social = (() => {
   }
 
   function installCustomCursorPolicy(frameDocument) {
+    // An iframe replacement can invalidate documentElement between the
+    // caller's readiness check and this function. Hold the current root so
+    // MutationObserver always receives a Node from the same document realm.
+    const observedRoot = frameDocument?.documentElement;
+    if (!observedRoot) return null;
+
     let policy = customCursorPolicies.get(frameDocument);
     if (policy) {
       ensureCustomCursorDocumentStyle(policy);
-      scanCustomCursorNode(policy, frameDocument.documentElement);
+      scanCustomCursorNode(policy, observedRoot);
       pruneCustomCursorShadowRoots(policy);
       return policy;
     }
@@ -1380,7 +1388,7 @@ const Social = (() => {
     customCursorPolicies.set(frameDocument, policy);
     ensureCustomCursorDocumentStyle(policy);
     patchCustomCursorShadowCreation(policy);
-    scanCustomCursorNode(policy, frameDocument.documentElement);
+    scanCustomCursorNode(policy, observedRoot);
 
     const FrameMutationObserver = frameDocument.defaultView?.MutationObserver;
     if (typeof FrameMutationObserver === 'function') {
@@ -1394,7 +1402,7 @@ const Social = (() => {
         }
         pruneCustomCursorShadowRoots(policy);
       });
-      policy.documentObserver.observe(frameDocument.documentElement, {
+      policy.documentObserver.observe(observedRoot, {
         childList: true,
         subtree: true,
       });
@@ -1492,6 +1500,7 @@ const Social = (() => {
         const frameDocument = frame.contentDocument;
         if (!frameDocument?.documentElement) continue;
         const policy = installCustomCursorPolicy(frameDocument);
+        if (!policy) continue;
         setCustomCursorPolicyMode(policy, policyActive, domFollower);
       } catch {
         /* cross-origin frames keep their own cursor policy */
