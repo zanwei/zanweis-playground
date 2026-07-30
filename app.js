@@ -535,7 +535,7 @@
         existingBridge.frameDocument === frameDocument
       ) {
         existingBridge.refreshGeometry();
-        Social.syncCustomCursor?.();
+        Social.syncCustomCursor?.(frame);
         frame.classList.add('is-ready');
         byModal.body.classList.add('is-live');
         return;
@@ -809,7 +809,7 @@
       if (getComputedStyle(byModal.window).transform !== 'none') {
         startTransitionGeometry();
       }
-      Social.syncCustomCursor?.();
+      Social.syncCustomCursor?.(frame);
     } catch {
       disposePlaygroundFrameBridge(frame);
       /* a replaced frame can disappear between load and listener setup */

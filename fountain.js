@@ -100,6 +100,8 @@ const Fountain = (() => {
     if (held === on) return;
     held = on;
     emitAcc = 0;
+    lastMoveT = 0;
+    mouseVx = 0;
     if (onState) onState(on);
   }
 
@@ -198,11 +200,17 @@ const Fountain = (() => {
     addEventListener(
       'pointermove',
       (e) => {
+        if (!held) {
+          mouse.x = e.clientX;
+          mouse.y = e.clientY;
+          return;
+        }
         const now = performance.now();
         const dtm = now - (lastMoveT || now);
         if (dtm > 0) mouseVx = ((e.clientX - mouse.x) / dtm) * 1000;
         lastMoveT = now;
-        mouse = { x: e.clientX, y: e.clientY };
+        mouse.x = e.clientX;
+        mouse.y = e.clientY;
       },
       { passive: true }
     );

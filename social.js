@@ -949,6 +949,7 @@ const Social = (() => {
     barInput = barEl.querySelector('input');
     barSend = barEl.querySelector('.chat-send');
     document.body.appendChild(barEl);
+    cursorChatResizeObserver?.observe(barEl);
     wireBulletButton(barEl.querySelector('#bullet-toggle'));
     window.visualViewport?.addEventListener('resize', () => scheduleComposerViewportSync(true), {
       passive: true,
@@ -1088,9 +1089,9 @@ const Social = (() => {
   const CURSOR_CHAT_GAP_Y = 14;
   const CURSOR_CHAT_MIN_INPUT_PX = 96;
   const CURSOR_CHAT_FLIP_HYSTERESIS = 22;
+  const CURSOR_CHAT_CONTROL_TEST_RE = /[\u0000-\u001f\u007f]/u;
   const CURSOR_CHAT_CONTROL_RE = /[\u0000-\u001f\u007f]/gu;
   const CUSTOM_CURSOR_ACTIVE_ATTR = 'data-custom-cursor-active';
-  const CUSTOM_CURSOR_DOM_ATTR = 'data-custom-cursor-dom';
   const CUSTOM_CURSOR_STYLE_ATTR = 'data-custom-cursor-style';
   const CUSTOM_CURSOR_SHADOW_STYLE_ATTR = 'data-custom-cursor-shadow-style';
   const CUSTOM_CURSOR_PATH =
@@ -1127,35 +1128,21 @@ const Social = (() => {
     `html[${CUSTOM_CURSOR_ACTIVE_ATTR}],` +
     `html[${CUSTOM_CURSOR_ACTIVE_ATTR}] *,` +
     `html[${CUSTOM_CURSOR_ACTIVE_ATTR}] *::before,` +
-    `html[${CUSTOM_CURSOR_ACTIVE_ATTR}] *::after{cursor:${CUSTOM_CURSOR_CSS_VALUE}!important}` +
-    `html[${CUSTOM_CURSOR_ACTIVE_ATTR}][${CUSTOM_CURSOR_DOM_ATTR}],` +
-    `html[${CUSTOM_CURSOR_ACTIVE_ATTR}][${CUSTOM_CURSOR_DOM_ATTR}] *,` +
-    `html[${CUSTOM_CURSOR_ACTIVE_ATTR}][${CUSTOM_CURSOR_DOM_ATTR}] *::before,` +
-    `html[${CUSTOM_CURSOR_ACTIVE_ATTR}][${CUSTOM_CURSOR_DOM_ATTR}] *::after{cursor:none!important}`;
+    `html[${CUSTOM_CURSOR_ACTIVE_ATTR}] *::after{cursor:${CUSTOM_CURSOR_CSS_VALUE}!important}`;
   const CUSTOM_CURSOR_SHADOW_CSS =
     `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}]),` +
     `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}]) *,` +
     `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}]) *::before,` +
-    `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}]) *::after{cursor:${CUSTOM_CURSOR_CSS_VALUE}!important}` +
-    `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}][${CUSTOM_CURSOR_DOM_ATTR}]),` +
-    `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}][${CUSTOM_CURSOR_DOM_ATTR}]) *,` +
-    `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}][${CUSTOM_CURSOR_DOM_ATTR}]) *::before,` +
-    `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}][${CUSTOM_CURSOR_DOM_ATTR}]) *::after{cursor:none!important}`;
-  const CUSTOM_CURSOR_SVG = `
-    <svg width="24" height="24" viewBox="0 0 28 28" fill="none" aria-hidden="true">
-      <g filter="url(#site-cursor-shadow)">
-        <path d="${CUSTOM_CURSOR_PATH}" fill="currentColor" stroke="#fff"
-          stroke-width="2" stroke-linejoin="round"/>
-      </g>
-      ${CUSTOM_CURSOR_FILTER}
-    </svg>`;
+    `:host([${CUSTOM_CURSOR_ACTIVE_ATTR}]) *::after{cursor:${CUSTOM_CURSOR_CSS_VALUE}!important}`;
 
   let cursorPoint = { x: innerWidth / 2, y: innerHeight / 2 };
   let cursorPointValid = false;
   let cursorChatEl = null;
   let cursorChatBubble = null;
   let cursorChatInput = null;
-  let cursorChatMirror = null;
+  let cursorChatMeasureContext = null;
+  let cursorChatInputWidth = CURSOR_CHAT_MIN_INPUT_PX;
+  let cursorChatPendingInputWidth = CURSOR_CHAT_MIN_INPUT_PX;
   let cursorFollowerRenderedX = Number.NaN;
   let cursorFollowerRenderedY = Number.NaN;
   let cursorChatOffsetX = Number.NaN;
@@ -1168,11 +1155,12 @@ const Social = (() => {
   let cursorChatResizeObserver = null;
   let cursorChatLayoutFrame = null;
   let cursorChatLayoutNeedsMeasure = false;
+  let cursorChatRenderFrame = null;
   const customCursorPolicies = new Map();
+  let customCursorRootStyled = false;
   let cursorChatOpen = false;
   let cursorChatFading = false;
   let cursorChatComposing = false;
-  let cursorChatHandoffPending = false;
   let cursorChatSession = null;
   let cursorChatSequence = 0;
   let cursorChatLastSentAt = -Infinity;
@@ -1198,13 +1186,18 @@ const Social = (() => {
   }
 
   function cleanCursorChatValue(value) {
-    const withoutControls = String(value || '').replace(CURSOR_CHAT_CONTROL_RE, '');
+    const string = String(value || '');
+    const withoutControls = CURSOR_CHAT_CONTROL_TEST_RE.test(string)
+      ? string.replace(CURSOR_CHAT_CONTROL_RE, '')
+      : string;
+    if (withoutControls.length <= CURSOR_CHAT_MAX_POINTS) {
+      return withoutControls;
+    }
     return Array.from(withoutControls).slice(0, CURSOR_CHAT_MAX_POINTS).join('');
   }
 
   function wireCursorChatValue(value) {
-    const clean = cleanCursorChatValue(value);
-    return /\S/u.test(clean) ? clean : '';
+    return typeof value === 'string' && /\S/u.test(value) ? value : '';
   }
 
   function normalizeCursorChatInput() {
@@ -1258,7 +1251,6 @@ const Social = (() => {
   function disposeCustomCursorShadowRoot(policy, shadowRoot, observer) {
     observer?.disconnect();
     shadowRoot.host?.removeAttribute(CUSTOM_CURSOR_ACTIVE_ATTR);
-    shadowRoot.host?.removeAttribute(CUSTOM_CURSOR_DOM_ATTR);
     for (const style of shadowRoot.querySelectorAll(
       `style[${CUSTOM_CURSOR_SHADOW_STYLE_ATTR}]`
     )) {
@@ -1299,7 +1291,6 @@ const Social = (() => {
     }
 
     host.toggleAttribute(CUSTOM_CURSOR_ACTIVE_ATTR, policy.active);
-    host.toggleAttribute(CUSTOM_CURSOR_DOM_ATTR, policy.domFollower);
     ensureCustomCursorShadowStyle(policy, shadowRoot);
     if (policy.shadowObservers.has(shadowRoot)) return;
 
@@ -1378,7 +1369,6 @@ const Social = (() => {
     let policy = customCursorPolicies.get(frameDocument);
     if (policy) {
       ensureCustomCursorDocumentStyle(policy);
-      scanCustomCursorNode(policy, observedRoot);
       pruneCustomCursorShadowRoots(policy);
       return policy;
     }
@@ -1390,7 +1380,6 @@ const Social = (() => {
       shadowObservers: new Map(),
       attachShadowPatch: null,
       active: false,
-      domFollower: false,
       disposed: false,
     };
     customCursorPolicies.set(frameDocument, policy);
@@ -1425,20 +1414,14 @@ const Social = (() => {
     return policy;
   }
 
-  function setCustomCursorPolicyMode(policy, active, domFollower) {
+  function setCustomCursorPolicyMode(policy, active) {
     policy.active = active;
-    policy.domFollower = active && domFollower;
     policy.document.documentElement?.toggleAttribute(
       CUSTOM_CURSOR_ACTIVE_ATTR,
       active
     );
-    policy.document.documentElement?.toggleAttribute(
-      CUSTOM_CURSOR_DOM_ATTR,
-      policy.domFollower
-    );
     for (const shadowRoot of policy.shadowObservers.keys()) {
       shadowRoot.host?.toggleAttribute(CUSTOM_CURSOR_ACTIVE_ATTR, active);
-      shadowRoot.host?.toggleAttribute(CUSTOM_CURSOR_DOM_ATTR, policy.domFollower);
     }
   }
 
@@ -1457,7 +1440,6 @@ const Social = (() => {
     policy.disposed = true;
     policy.documentObserver?.disconnect();
     policy.document.documentElement?.removeAttribute(CUSTOM_CURSOR_ACTIVE_ATTR);
-    policy.document.documentElement?.removeAttribute(CUSTOM_CURSOR_DOM_ATTR);
     for (const [shadowRoot, observer] of [...policy.shadowObservers]) {
       disposeCustomCursorShadowRoot(policy, shadowRoot, observer);
     }
@@ -1488,35 +1470,32 @@ const Social = (() => {
     }
   }
 
-  function syncCustomCursor() {
+  function syncCustomCursor(frame = null) {
     const policyActive = finePointer.matches;
-    const domFollower =
-      policyActive &&
-      cursorPointValid &&
-      (cursorChatOpen || cursorChatHandoffPending);
-    if (cursorChatEl) cursorChatEl.hidden = !domFollower;
-    document.documentElement.style.setProperty(
-      '--site-custom-cursor',
-      CUSTOM_CURSOR_CSS_VALUE
-    );
+    if (!customCursorRootStyled) {
+      document.documentElement.style.setProperty(
+        '--site-custom-cursor',
+        CUSTOM_CURSOR_CSS_VALUE
+      );
+      customCursorRootStyled = true;
+    }
     document.documentElement.classList.toggle('has-custom-cursor', policyActive);
-    document.documentElement.classList.toggle('has-dom-cursor', domFollower);
 
     for (const policy of [...customCursorPolicies.values()]) {
       if (!customCursorPolicyIsConnected(policy)) {
         disposeCustomCursorPolicy(policy);
       } else {
-        setCustomCursorPolicyMode(policy, policyActive, domFollower);
+        setCustomCursorPolicyMode(policy, policyActive);
       }
     }
 
-    for (const frame of document.querySelectorAll('iframe')) {
+    if (frame) {
       try {
         const frameDocument = frame.contentDocument;
-        if (!frameDocument?.documentElement) continue;
+        if (!frameDocument?.documentElement) return;
         const policy = installCustomCursorPolicy(frameDocument);
-        if (!policy) continue;
-        setCustomCursorPolicyMode(policy, policyActive, domFollower);
+        if (!policy) return;
+        setCustomCursorPolicyMode(policy, policyActive);
       } catch {
         /* cross-origin frames keep their own cursor policy */
       }
@@ -1528,18 +1507,23 @@ const Social = (() => {
     cursorChatEl = document.createElement('div');
     cursorChatEl.id = 'cursor-chat-composer';
     cursorChatEl.className = 'cursor-chat-local';
-    cursorChatEl.hidden = true;
+    cursorChatEl.inert = true;
+    cursorChatEl.setAttribute('aria-hidden', 'true');
     cursorChatEl.innerHTML =
-      `<div class="site-cursor" aria-hidden="true">${CUSTOM_CURSOR_SVG}</div>
-      <div class="cursor-chat-bubble cursor-chat-local-bubble">
+      `<div class="cursor-chat-bubble cursor-chat-local-bubble">
         <input class="cursor-chat-input" type="text" placeholder="Say something"
-          aria-label="Cursor chat message" autocomplete="off" spellcheck="true" />
-        <span class="cursor-chat-mirror" aria-hidden="true"></span>
+          aria-label="Cursor chat message" autocomplete="off" autocorrect="off"
+          autocapitalize="off" spellcheck="false" tabindex="-1" />
       </div>`;
     cursorChatBubble = cursorChatEl.querySelector('.cursor-chat-bubble');
     cursorChatInput = cursorChatEl.querySelector('.cursor-chat-input');
-    cursorChatMirror = cursorChatEl.querySelector('.cursor-chat-mirror');
     document.body.appendChild(cursorChatEl);
+    cursorChatMeasureContext = document.createElement('canvas').getContext('2d');
+    syncCursorChatMeasureFont();
+    document.fonts?.ready?.then(() => {
+      syncCursorChatMeasureFont();
+      if (cursorChatOpen) measureCursorChat();
+    });
 
     if (typeof ResizeObserver === 'function') {
       cursorChatResizeObserver = new ResizeObserver((entries) => {
@@ -1565,7 +1549,7 @@ const Social = (() => {
           cursorChatHeight = height;
           shouldPosition = true;
         }
-        if (shouldPosition) positionCursorChat();
+        if (shouldPosition) scheduleCursorChatRender();
       });
       cursorChatResizeObserver.observe(cursorChatBubble);
       if (barEl) cursorChatResizeObserver.observe(barEl);
@@ -1584,7 +1568,6 @@ const Social = (() => {
       reviveCursorChat();
       const value = normalizeCursorChatInput();
       measureCursorChat();
-      positionCursorChat(true);
       queueCursorChatSync(value, true);
       scheduleCursorChatExpiry();
     });
@@ -1595,12 +1578,10 @@ const Social = (() => {
         // The browser owns the provisional IME value and candidate window.
         // Render it locally, but do not leak or normalize it until commit.
         measureCursorChat();
-        positionCursorChat(false);
         return;
       }
       const value = normalizeCursorChatInput();
       measureCursorChat();
-      positionCursorChat(true);
       queueCursorChatSync(value);
       scheduleCursorChatExpiry();
     });
@@ -1614,7 +1595,6 @@ const Social = (() => {
         reviveCursorChat();
         cursorChatInput.value = '';
         measureCursorChat();
-        positionCursorChat(true);
         queueCursorChatSync('', true);
         scheduleCursorChatExpiry();
       } else if (event.key === 'Escape') {
@@ -1625,23 +1605,71 @@ const Social = (() => {
     });
   }
 
+  function syncCursorChatMeasureFont() {
+    if (!cursorChatInput || !cursorChatMeasureContext) return;
+    const style = getComputedStyle(cursorChatInput);
+    cursorChatMeasureContext.font =
+      style.font ||
+      `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    cursorChatMeasureContext.fontKerning = 'normal';
+  }
+
   function measureCursorChat() {
-    if (!cursorChatEl || cursorChatEl.hidden) return;
+    if (!cursorChatOpen || !cursorChatInput) return;
     const sample = cursorChatInput.value || cursorChatInput.placeholder;
-    cursorChatMirror.textContent = `${sample}\u200b`;
-    const textWidth = Math.ceil(cursorChatMirror.getBoundingClientRect().width);
+    const measuredWidth = cursorChatMeasureContext
+      ? cursorChatMeasureContext.measureText(sample).width
+      : Array.from(sample).length * 15;
+    const textWidth = Math.ceil(measuredWidth);
     const maxInputWidth = Math.max(
       CURSOR_CHAT_MIN_INPUT_PX,
       Math.min(300, cursorChatViewportWidth - CURSOR_CHAT_EDGE * 2 - 28)
     );
     const minInputWidth = Math.min(CURSOR_CHAT_MIN_INPUT_PX, maxInputWidth);
-    cursorChatInput.style.setProperty(
-      '--cursor-chat-input-width',
-      `${clamp(textWidth + 2, minInputWidth, maxInputWidth)}px`
+    cursorChatPendingInputWidth = clamp(
+      textWidth + 2,
+      minInputWidth,
+      maxInputWidth
     );
-    cursorChatWidth =
-      clamp(textWidth + 2, minInputWidth, maxInputWidth) + 28;
+    cursorChatWidth = cursorChatPendingInputWidth + 28;
     cursorChatHeight = 35;
+    scheduleCursorChatRender();
+  }
+
+  function scheduleCursorChatRender() {
+    if (!cursorChatOpen || cursorChatRenderFrame !== null) return;
+    cursorChatRenderFrame = requestAnimationFrame(() => {
+      cursorChatRenderFrame = null;
+      renderCursorChat();
+    });
+  }
+
+  function renderCursorChat() {
+    if (!cursorChatOpen || !cursorChatInput) return;
+    if (cursorChatPendingInputWidth !== cursorChatInputWidth) {
+      cursorChatInputWidth = cursorChatPendingInputWidth;
+      cursorChatInput.style.setProperty(
+        '--cursor-chat-input-width',
+        `${cursorChatInputWidth}px`
+      );
+    }
+    positionCursorFollower();
+    positionCursorChat();
+  }
+
+  function renderCursorChatNow() {
+    if (cursorChatRenderFrame !== null) {
+      cancelAnimationFrame(cursorChatRenderFrame);
+      cursorChatRenderFrame = null;
+    }
+    renderCursorChat();
+  }
+
+  function cancelCursorChatRender() {
+    if (cursorChatRenderFrame !== null) {
+      cancelAnimationFrame(cursorChatRenderFrame);
+      cursorChatRenderFrame = null;
+    }
   }
 
   function refreshCursorChatLayout() {
@@ -1661,12 +1689,12 @@ const Social = (() => {
       cursorChatLayoutNeedsMeasure = false;
       refreshCursorChatLayout();
       if (shouldMeasure) measureCursorChat();
-      positionCursorChat();
+      scheduleCursorChatRender();
     });
   }
 
   function positionCursorChat(allowFlip = !cursorChatComposing) {
-    if (!cursorChatOpen || !cursorChatEl || cursorChatEl.hidden) return;
+    if (!cursorChatOpen || !cursorChatEl) return;
     const width = cursorChatWidth;
     const height = cursorChatHeight;
     const bottomEdge = Math.max(
@@ -1743,8 +1771,9 @@ const Social = (() => {
 
     // The outer follower owns the pointer position. The bubble only carries a
     // relative offset, so moving in the open viewport needs no layout read.
-    const offsetX = Math.round(x - cursorPoint.x);
-    const offsetY = Math.round(y - cursorPoint.y);
+    const pixelRatio = Math.max(1, devicePixelRatio || 1);
+    const offsetX = Math.round((x - cursorPoint.x) * pixelRatio) / pixelRatio;
+    const offsetY = Math.round((y - cursorPoint.y) * pixelRatio) / pixelRatio;
     if (offsetX === cursorChatOffsetX && offsetY === cursorChatOffsetY) return;
     cursorChatOffsetX = offsetX;
     cursorChatOffsetY = offsetY;
@@ -1755,24 +1784,26 @@ const Social = (() => {
     if (
       !cursorPointValid ||
       !cursorChatEl ||
-      cursorChatEl.hidden ||
-      !(cursorChatOpen || cursorChatHandoffPending)
+      !cursorChatOpen
     ) {
       return;
     }
-    const x = Math.round(cursorPoint.x);
-    const y = Math.round(cursorPoint.y);
+    const pixelRatio = Math.max(1, devicePixelRatio || 1);
+    const x = Math.round(cursorPoint.x * pixelRatio) / pixelRatio;
+    const y = Math.round(cursorPoint.y * pixelRatio) / pixelRatio;
     if (x === cursorFollowerRenderedX && y === cursorFollowerRenderedY) return;
     cursorFollowerRenderedX = x;
     cursorFollowerRenderedY = y;
     cursorChatEl.style.transform = `translate3d(${x}px, ${y}px, 0)`;
   }
 
-  function completeCursorChatHandoff() {
-    if (!cursorChatHandoffPending) return;
-    cursorChatHandoffPending = false;
-    if (cursorChatEl) cursorChatEl.hidden = true;
-    syncCustomCursor();
+  function syncCursorChatVisibility() {
+    if (!cursorChatEl) return;
+    const visible =
+      finePointer.matches && cursorPointValid && cursorChatOpen;
+    cursorChatEl.classList.toggle('is-active', visible);
+    cursorChatEl.inert = !visible;
+    cursorChatEl.setAttribute('aria-hidden', String(!visible));
   }
 
   function trackPointer(x, y) {
@@ -1781,17 +1812,10 @@ const Social = (() => {
     cursorPoint.y = y;
     cursorPointValid = true;
 
-    // Recent-style split: normal browsing uses the browser's custom SVG
-    // cursor plane. Only Cursor Chat mounts a DOM follower, and that follower
-    // is updated in the pointer callback so it never trails by one RAF.
-    if (cursorChatOpen || cursorChatHandoffPending) {
-      positionCursorFollower();
-      if (cursorChatOpen) positionCursorChat();
-    }
-    // After the fade, keep the DOM arrow at the last point until movement.
-    // This event has already aligned it with the platform cursor, so the swap
-    // back to the CSS SVG is visually continuous.
-    if (cursorChatHandoffPending) completeCursorChatHandoff();
+    // The platform cursor keeps using the CSS SVG cursor plane. Only the
+    // bubble is DOM-driven, and high-polling pointer events collapse into the
+    // latest point so each display frame performs at most one style write.
+    if (cursorChatOpen) scheduleCursorChatRender();
   }
 
   function cancelCursorChatSync() {
@@ -1800,9 +1824,8 @@ const Social = (() => {
     cursorChatPendingText = null;
   }
 
-  function sendCursorChatNow(value, allowDuplicate = false) {
+  function sendCursorChatNow(text, allowDuplicate = false) {
     if (!cursorChatSession) return;
-    const text = wireCursorChatValue(value);
     if (!allowDuplicate && text === cursorChatLastSentText) return;
     cursorChatLastSentAt = performance.now();
     cursorChatLastSentText = text;
@@ -1865,29 +1888,27 @@ const Social = (() => {
     cursorChatBubble.classList.remove('is-out');
   }
 
-  function finishCursorChat(waitForPointerHandoff = false) {
+  function finishCursorChat() {
     clearTimeout(cursorChatIdleTimer);
     clearTimeout(cursorChatFadeTimer);
     cancelCursorChatSync();
+    cancelCursorChatRender();
     cursorChatIdleTimer = null;
     cursorChatFadeTimer = null;
     cursorChatOpen = false;
     cursorChatFading = false;
     cursorChatComposing = false;
     cursorChatBubble?.classList.remove('is-out');
-    if (cursorChatBubble) cursorChatBubble.hidden = true;
     if (document.activeElement === cursorChatInput) cursorChatInput.blur();
     if (cursorChatInput) cursorChatInput.value = '';
     cursorChatSession = null;
     cursorChatLastSentText = null;
-    cursorChatHandoffPending =
-      waitForPointerHandoff && finePointer.matches && cursorPointValid;
     chatHint?.setAttribute('aria-expanded', 'false');
     if (chatHint) {
       chatHint.title = 'Open cursor chat';
       chatHint.setAttribute('aria-label', 'Open cursor chat');
     }
-    syncCustomCursor();
+    syncCursorChatVisibility();
   }
 
   function beginCursorChatFade() {
@@ -1901,7 +1922,7 @@ const Social = (() => {
     const session = cursorChatSession;
     cursorChatFadeTimer = setTimeout(() => {
       if (cursorChatSession === session && cursorChatFading) {
-        finishCursorChat(true);
+        finishCursorChat();
       }
     }, CURSOR_CHAT_FADE_MS);
   }
@@ -1911,7 +1932,7 @@ const Social = (() => {
   }
 
   function closeCursorChatImmediately() {
-    if (!cursorChatOpen && !cursorChatHandoffPending) return;
+    if (!cursorChatOpen) return;
     if (cursorChatOpen) {
       cancelCursorChatSync();
       sendCursorChatNow('', true);
@@ -1933,7 +1954,6 @@ const Social = (() => {
     if (cursorChatOpen) closeCursorChatImmediately();
     ensureCursorChat();
 
-    cursorChatHandoffPending = false;
     cursorChatSession = createCursorChatSession();
     cursorChatLastSentAt = -Infinity;
     cursorChatLastSentText = null;
@@ -1947,13 +1967,11 @@ const Social = (() => {
     cursorChatFading = false;
     cursorChatComposing = false;
     cursorChatInput.value = '';
-    cursorChatBubble.hidden = false;
     cursorChatBubble.classList.remove('is-out');
     refreshCursorChatLayout();
-    syncCustomCursor();
     measureCursorChat();
-    positionCursorFollower();
-    positionCursorChat();
+    renderCursorChatNow();
+    syncCursorChatVisibility();
     cursorChatInput.focus({ preventScroll: true });
     chatHint?.setAttribute('aria-expanded', 'true');
     if (chatHint) {
@@ -1984,7 +2002,9 @@ const Social = (() => {
     'pointermove',
     (event) => {
       if (event.pointerType && event.pointerType !== 'mouse' && event.pointerType !== 'pen') return;
-      trackPointer(event.clientX, event.clientY);
+      const samples = event.getCoalescedEvents?.();
+      const latest = samples?.length ? samples[samples.length - 1] : event;
+      trackPointer(latest.clientX, latest.clientY);
     },
     { passive: true }
   );
@@ -2007,7 +2027,6 @@ const Social = (() => {
       if (event.relatedTarget !== null) return;
       cursorPointValid = false;
       closeCursorChatImmediately();
-      syncCustomCursor();
     },
     { passive: true }
   );
@@ -2068,13 +2087,11 @@ const Social = (() => {
     if (document.hidden) {
       cursorPointValid = false;
       closeCursorChatImmediately();
-      syncCustomCursor();
     }
   });
   addEventListener('blur', () => {
     cursorPointValid = false;
     closeCursorChatImmediately();
-    syncCustomCursor();
   });
   finePointer.addEventListener('change', (event) => {
     if (!event.matches) {
@@ -2082,6 +2099,7 @@ const Social = (() => {
       closeCursorChatImmediately();
     }
     syncCustomCursor();
+    syncCursorChatVisibility();
   });
 
   // Keep the controlled input stable across every open/close cycle and make

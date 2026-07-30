@@ -68,6 +68,7 @@ const Presence = (() => {
   const LIKE_MINE_KEY = 'zw-like-mine-v1';
   const CLIENT_ID_RE = /^[A-Za-z0-9_-]{16,64}$/;
   const CHAT_SESSION_RE = /^[A-Za-z0-9_-]{8,64}$/;
+  const CHAT_CONTROL_RE = /[\u0000-\u001f\u007f]/;
 
   // Peers announce a color NAME; the stylesheet owns the actual values.
   const cssColor = (c) => (c && c.startsWith('#') ? c : `var(--presence-${c || 'blue'})`);
@@ -76,7 +77,13 @@ const Presence = (() => {
 
   function normalizeChatText(value) {
     if (typeof value !== 'string') return '';
-    const clean = value.replace(/[\u0000-\u001f\u007f]/g, '');
+    const clean = CHAT_CONTROL_RE.test(value)
+      ? value.replace(/[\u0000-\u001f\u007f]/g, '')
+      : value;
+    // The common typing path is already clean and comfortably below the
+    // protocol limit. Preserve the original string instead of allocating an
+    // Array plus a second string for every keypress.
+    if (clean.length <= CHAT_TEXT_MAX) return clean;
     return Array.from(clean).slice(0, CHAT_TEXT_MAX).join('');
   }
 
@@ -201,6 +208,11 @@ const Presence = (() => {
       this.chatOffset = { x: Number.NaN, y: Number.NaN };
       this.renderedPosition = { x: Number.NaN, y: Number.NaN };
       this.visible = false;
+      this.frameVisible = false;
+      this.framePositionChanged = false;
+      this.frameReset = false;
+      this.framePopIn = false;
+      this.viewportRevision = -1;
       chatCursorByElement.set(this.chatEl, this);
       chatResizeObserver?.observe(this.chatEl);
     }
@@ -238,7 +250,9 @@ const Presence = (() => {
         ? this.setTarget(a, fx, fy)
         : false;
 
-      const safeText = normalizeChatText(text);
+      // Incoming chat is normalized once by applyRemoteChat before a cursor
+      // slot is allocated. Do not repeat the Unicode scan in the render path.
+      const safeText = text;
       if (!safeText || safeText.trim() === '') {
         this.clearChat();
         return targetChanged;
@@ -305,14 +319,23 @@ const Presence = (() => {
       }, CHAT_FADE_MS);
     }
 
-    placeChat(force = false) {
+    placeChat(
+      force = false,
+      viewport = { width: innerWidth, height: innerHeight }
+    ) {
       if (this.chatEl.hidden) return;
       const { width, height } = this.chatSize;
       const gutter = 8;
-      let dx = this.x + 26 + width <= innerWidth - gutter ? 26 : -width - 14;
-      let dy = this.y + 22 + height <= innerHeight - gutter ? 22 : -height - 14;
-      dx = Math.max(gutter - this.x, Math.min(dx, innerWidth - gutter - width - this.x));
-      dy = Math.max(gutter - this.y, Math.min(dy, innerHeight - gutter - height - this.y));
+      let dx = this.x + 26 + width <= viewport.width - gutter ? 26 : -width - 14;
+      let dy = this.y + 22 + height <= viewport.height - gutter ? 22 : -height - 14;
+      dx = Math.max(
+        gutter - this.x,
+        Math.min(dx, viewport.width - gutter - width - this.x)
+      );
+      dy = Math.max(
+        gutter - this.y,
+        Math.min(dy, viewport.height - gutter - height - this.y)
+      );
       const x = Math.round(dx);
       const y = Math.round(dy);
       if (!force && x === this.chatOffset.x && y === this.chatOffset.y) return;
@@ -320,17 +343,28 @@ const Presence = (() => {
       this.chatEl.style.transform = `translate3d(${x}px, ${y}px, 0)`;
     }
 
-    resolve() {
+    resolveAnchorElement() {
+      if (!this.target || this.target.anchor === 'page') return null;
+      if (!this.anchorEl || !this.anchorEl.isConnected) {
+        this.anchorEl = document.querySelector(
+          `[data-anchor="${CSS.escape(this.target.anchor)}"]`
+        );
+      }
+      return this.anchorEl;
+    }
+
+    resolve(frameGeometry) {
       if (!this.target) return null;
       const { anchor, fx, fy } = this.target;
       if (anchor === 'page') {
         // fx is a fraction of document width, fy an absolute document offset
-        return { x: fx * document.documentElement.clientWidth - scrollX, y: fy - scrollY };
+        return {
+          x: fx * frameGeometry.pageWidth - frameGeometry.scrollX,
+          y: fy - frameGeometry.scrollY,
+        };
       }
-      if (!this.anchorEl || !this.anchorEl.isConnected) {
-        this.anchorEl = document.querySelector(`[data-anchor="${CSS.escape(anchor)}"]`);
-      }
-      const rect = this.anchorEl && this.anchorEl.getBoundingClientRect();
+      const rect =
+        this.anchorEl && frameGeometry.anchorRects.get(this.anchorEl);
       // A hidden or zero-area anchor means "this card isn't on screen here" —
       // hide the cursor rather than resolving it to the viewport corner.
       if (!rect || rect.width === 0 || rect.height === 0) return null;
@@ -343,12 +377,15 @@ const Presence = (() => {
       this.el.style.visibility = visible ? 'visible' : 'hidden';
     }
 
-    tick(now, dt, tau) {
-      const p = this.resolve();
+    update(now, dt, tau, frameGeometry) {
+      this.framePositionChanged = false;
+      this.frameReset = false;
+      this.framePopIn = false;
+      const p = this.resolve(frameGeometry);
       if (!p || now - this.seenAt > IDLE_HIDE) {
-        this.setVisible(false);
+        this.frameVisible = false;
         this.placed = false; // reappear with the pop-in, not a flight across
-        this.el.classList.remove('is-in');
+        this.frameReset = true;
         return false;
       }
       if (!this.placed) {
@@ -356,7 +393,7 @@ const Presence = (() => {
         this.x = p.x;
         this.y = p.y;
         this.placed = true;
-        requestAnimationFrame(() => this.el.classList.add('is-in'));
+        this.framePopIn = true;
       } else {
         // Exponential time-based damping: identical feel at 60/120/144Hz.
         // Snap the sub-pixel tail so a settled room can park its RAF loop.
@@ -367,8 +404,11 @@ const Presence = (() => {
         if (Math.abs(p.y - this.y) <= 0.25) this.y = p.y;
       }
       const onScreen =
-        this.x > -40 && this.y > -40 && this.x < innerWidth + 40 && this.y < innerHeight + 40;
-      this.setVisible(onScreen);
+        this.x > -40 &&
+        this.y > -40 &&
+        this.x < frameGeometry.width + 40 &&
+        this.y < frameGeometry.height + 40;
+      this.frameVisible = onScreen;
       const renderedX = Math.round(this.x * 10) / 10;
       const renderedY = Math.round(this.y * 10) / 10;
       if (
@@ -376,10 +416,33 @@ const Presence = (() => {
         renderedY !== this.renderedPosition.y
       ) {
         this.renderedPosition = { x: renderedX, y: renderedY };
-        this.el.style.transform = `translate3d(${renderedX}px, ${renderedY}px, 0)`;
-        this.placeChat();
+        this.framePositionChanged = true;
       }
       return Math.abs(p.x - this.x) > 0.25 || Math.abs(p.y - this.y) > 0.25;
+    }
+
+    render(frameGeometry) {
+      // frame() resolves every unique anchor before entering this write-only
+      // phase, so one cursor's transform cannot invalidate the next cursor's
+      // getBoundingClientRect().
+      this.setVisible(this.frameVisible);
+      if (this.frameReset) this.el.classList.remove('is-in');
+      if (this.framePositionChanged) {
+        const { x, y } = this.renderedPosition;
+        this.el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+      }
+      if (
+        this.framePositionChanged ||
+        this.viewportRevision !== frameGeometry.revision
+      ) {
+        this.viewportRevision = frameGeometry.revision;
+        this.placeChat(false, frameGeometry);
+      }
+      if (this.framePopIn) {
+        requestAnimationFrame(() => {
+          if (this.placed) this.el.classList.add('is-in');
+        });
+      }
     }
 
     leave(onDone) {
@@ -414,21 +477,29 @@ const Presence = (() => {
 
   // --- anchor helpers ------------------------------------------------------
 
-  function anchorFor(x, y) {
+  function anchorFor(x, y, viewport) {
     const el = document.elementFromPoint(x, y);
     const host = el && el.closest('[data-anchor]');
     if (host) {
       const rect = host.getBoundingClientRect();
-      return {
-        anchor: host.dataset.anchor,
-        fx: (x - rect.left) / rect.width,
-        fy: (y - rect.top) / rect.height,
-      };
+      if (rect.width > 0 && rect.height > 0) {
+        return {
+          anchor: host.dataset.anchor,
+          fx: (x - rect.left) / rect.width,
+          fy: (y - rect.top) / rect.height,
+        };
+      }
     }
+    const pageWidth = Math.max(
+      1,
+      viewport?.pageWidth || document.documentElement.clientWidth
+    );
+    const pageScrollX = viewport?.scrollX ?? scrollX;
+    const pageScrollY = viewport?.scrollY ?? scrollY;
     return {
       anchor: 'page',
-      fx: (x + scrollX) / document.documentElement.clientWidth,
-      fy: y + scrollY,
+      fx: (x + pageScrollX) / pageWidth,
+      fy: y + pageScrollY,
     };
   }
 
@@ -481,6 +552,38 @@ const Presence = (() => {
     let myFocus = null; // replayed once the transport comes up (deep links)
     let chatReplay = null;
     let chatTrackingUntil = 0;
+    let pendingLocalChat = null;
+    let latestPointerAnchor = null;
+    const viewportMetrics = {
+      width: innerWidth,
+      height: innerHeight,
+      pageWidth: Math.max(1, document.documentElement.clientWidth),
+      scrollX,
+      scrollY,
+      revision: 0,
+    };
+
+    function pageAnchorFor(x, y) {
+      return {
+        anchor: 'page',
+        fx: (x + viewportMetrics.scrollX) / viewportMetrics.pageWidth,
+        fy: y + viewportMetrics.scrollY,
+      };
+    }
+
+    function cachedAnchorFor(snapshot) {
+      if (
+        latestPointerAnchor &&
+        latestPointerAnchor.revision === viewportMetrics.revision &&
+        Math.abs(latestPointerAnchor.x - snapshot.x) <= 0.5 &&
+        Math.abs(latestPointerAnchor.y - snapshot.y) <= 0.5
+      ) {
+        return latestPointerAnchor.position;
+      }
+      // Clear/replay must never force a hit-test in an input or WebSocket
+      // callback. A following cursor sample will refine a page fallback.
+      return pageAnchorFor(snapshot.x, snapshot.y);
+    }
 
     function notifyLocations() {
       if (onLocations) onLocations([...locations.values()]);
@@ -597,8 +700,7 @@ const Presence = (() => {
       for (const [card, on] of pendingLikes) transmitLike(card, on);
     }
 
-    function chatWirePayload(snapshot, ttlMs) {
-      const position = anchorFor(snapshot.x, snapshot.y);
+    function chatWirePayload(snapshot, ttlMs, position) {
       return {
         t: 'chat',
         session: snapshot.session,
@@ -620,7 +722,13 @@ const Presence = (() => {
         chatTrackingUntil = 0;
         return;
       }
-      send(chatWirePayload(chatReplay, Math.min(CHAT_TTL, remaining)));
+      send(
+        chatWirePayload(
+          chatReplay,
+          Math.min(CHAT_TTL, remaining),
+          cachedAnchorFor(chatReplay)
+        )
+      );
     }
 
     const pendingRemoteChats = new Map();
@@ -834,18 +942,32 @@ const Presence = (() => {
     let rafId = null;
     let parkedTimer = null;
     let lastFrame = 0;
+    const frameGeometry = { ...viewportMetrics, anchorRects: new Map() };
     function frame(now) {
       rafId = null;
       const dt = lastFrame ? Math.min(250, now - lastFrame) : 1000 / 60;
       lastFrame = now;
+      Object.assign(frameGeometry, viewportMetrics);
+      const { anchorRects } = frameGeometry;
+      anchorRects.clear();
+      // Read each unique card geometry once. No cursor style is mutated until
+      // the second render loop below, which prevents read/write/read layout
+      // thrashing when several peers share an anchor.
+      for (const c of cursors.values()) {
+        const anchorEl = c.resolveAnchorElement();
+        if (anchorEl && !anchorRects.has(anchorEl)) {
+          anchorRects.set(anchorEl, anchorEl.getBoundingClientRect());
+        }
+      }
       let stale = null;
       let moving = false;
       for (const [id, c] of cursors) {
-        if (c.tick(now, dt, dampTau)) moving = true;
+        if (c.update(now, dt, dampTau, frameGeometry)) moving = true;
         // Long-hidden cursors leave the map entirely, so an idle room's
         // loop can park instead of ticking ghosts forever.
         if (!c.leaving && now - c.seenAt > IDLE_HIDE * 2) (stale ||= []).push(id);
       }
+      for (const c of cursors.values()) c.render(frameGeometry);
       if (stale) {
         for (const id of stale) {
           const c = cursors.get(id);
@@ -871,8 +993,40 @@ const Presence = (() => {
       }
       if (rafId === null) rafId = requestAnimationFrame(frame);
     }
-    addEventListener('scroll', ensureLoop, { passive: true });
-    addEventListener('resize', ensureLoop, { passive: true });
+    function refreshViewportScroll() {
+      const nextScrollX = scrollX;
+      const nextScrollY = scrollY;
+      if (
+        nextScrollX !== viewportMetrics.scrollX ||
+        nextScrollY !== viewportMetrics.scrollY
+      ) {
+        viewportMetrics.scrollX = nextScrollX;
+        viewportMetrics.scrollY = nextScrollY;
+        viewportMetrics.revision += 1;
+      }
+      ensureLoop();
+    }
+    function refreshViewportSize() {
+      const nextWidth = innerWidth;
+      const nextHeight = innerHeight;
+      const nextPageWidth = Math.max(1, document.documentElement.clientWidth);
+      if (
+        nextWidth !== viewportMetrics.width ||
+        nextHeight !== viewportMetrics.height ||
+        nextPageWidth !== viewportMetrics.pageWidth
+      ) {
+        viewportMetrics.width = nextWidth;
+        viewportMetrics.height = nextHeight;
+        viewportMetrics.pageWidth = nextPageWidth;
+        viewportMetrics.revision += 1;
+      }
+      refreshViewportScroll();
+    }
+    addEventListener('scroll', refreshViewportScroll, { passive: true });
+    addEventListener('resize', refreshViewportSize, { passive: true });
+    window.visualViewport?.addEventListener('resize', refreshViewportSize, {
+      passive: true,
+    });
 
     // --- transport: SSE first, BroadcastChannel fallback -------------------
 
@@ -964,6 +1118,11 @@ const Presence = (() => {
       let cursorPostInFlight = false;
       let cursorPostPending = null;
       let cursorPostController = null;
+      let chatPostEpoch = 0;
+      let chatPostActive = false;
+      let chatPostInFlight = false;
+      let chatPostPending = null;
+      let chatPostController = null;
 
       function resetCursorPosts(active = false) {
         cursorPostEpoch += 1;
@@ -974,15 +1133,33 @@ const Presence = (() => {
         cursorPostController = null;
       }
 
+      function resetChatPosts(active = false) {
+        chatPostEpoch += 1;
+        chatPostActive = active;
+        chatPostPending = null;
+        chatPostInFlight = false;
+        chatPostController?.abort();
+        chatPostController = null;
+      }
+
       function authenticatedBody(payload) {
         return JSON.stringify({ id: myId, token: myToken, ...payload });
       }
 
       function sendSSEControl(payload) {
+        if (payload?.t === 'chat' && payload.text) {
+          sendSSEChat(payload);
+          return;
+        }
         if (payload?.t === 'idle') {
           // Do not let an older queued/in-flight cursor arrive after the
           // immediate retract and make a departed pointer reappear.
           resetCursorPosts(cursorPostActive);
+        }
+        if (payload?.t === 'idle' || payload?.t === 'chat') {
+          // A clear must overtake every queued typing update. Session/seq
+          // validation handles an already-accepted older request.
+          resetChatPosts(chatPostActive);
         }
         const body = authenticatedBody(payload);
         let accepted = false;
@@ -999,6 +1176,43 @@ const Presence = (() => {
           body,
           keepalive: true,
         }).catch(() => {});
+      }
+
+      function flushSSEChat() {
+        if (!chatPostActive || chatPostInFlight || chatPostPending === null) {
+          return;
+        }
+        const body = chatPostPending;
+        const epoch = chatPostEpoch;
+        chatPostPending = null;
+        chatPostInFlight = true;
+        chatPostController =
+          typeof AbortController === 'function' ? new AbortController() : null;
+
+        fetch('/presence/event', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body,
+          keepalive: true,
+          ...(chatPostController
+            ? { signal: chatPostController.signal }
+            : {}),
+        })
+          .catch(() => {})
+          .finally(() => {
+            if (epoch !== chatPostEpoch) return;
+            chatPostInFlight = false;
+            chatPostController = null;
+            flushSSEChat();
+          });
+      }
+
+      function sendSSEChat(payload) {
+        if (!chatPostActive) return;
+        // Typing is live state, not a queue: a slow request keeps only the
+        // newest confirmed value. Clears still use the immediate control path.
+        chatPostPending = authenticatedBody(payload);
+        flushSSEChat();
       }
 
       function flushSSECursor() {
@@ -1062,6 +1276,7 @@ const Presence = (() => {
             if (peer.chat) handle({ t: 'chat', id: peer.id, color: peer.color, ...peer.chat });
           }
           resetCursorPosts(true);
+          resetChatPosts(true);
           send = sendSSEControl;
           sendCursor = sendSSECursor;
           applyLikeSnapshot(msg.likes);
@@ -1090,6 +1305,7 @@ const Presence = (() => {
         dropAllPeers();
         transport = 'pending';
         resetCursorPosts();
+        resetChatPosts();
         send = () => {};
         sendCursor = () => {};
         if (onCount) onCount(1);
@@ -1187,7 +1403,7 @@ const Presence = (() => {
     let pointerTimerDue = 0;
     let latestPointer = { x: innerWidth / 2, y: innerHeight / 2 };
 
-    function pointerReportInterval(now = performance.now()) {
+    function pointerReportInterval(now) {
       if (now < chatTrackingUntil) {
         return sendEvery === Infinity
           ? CHAT_MOVE_INTERVAL
@@ -1201,10 +1417,11 @@ const Presence = (() => {
       pointerTimer = null;
       pointerTimerDue = 0;
       pointerPending = false;
+      pendingLocalChat = null;
     }
 
-    function schedulePointer(now = performance.now()) {
-      if (!pointerPending) return;
+    function schedulePointer(now, allowEarlier = false) {
+      if (!pointerPending && !pendingLocalChat) return;
       const interval = pointerReportInterval(now);
       if (interval === Infinity) {
         cancelPendingPointer();
@@ -1212,20 +1429,22 @@ const Presence = (() => {
       }
       const delay = Math.max(0, interval - (now - lastSent));
       const due = now + delay;
-      // Keep an already-earlier trailing edge; replace only when the crowd
-      // pace or chat mode allows this latest point to go out sooner.
-      if (pointerTimer !== null && pointerTimerDue <= due + 0.5) return;
-      if (pointerTimer !== null) clearTimeout(pointerTimer);
+      if (pointerTimer !== null) {
+        // Pointer events only overwrite latestPointer while a trailing edge is
+        // armed. Cursor Chat may explicitly pull a slow crowd timer forward.
+        if (!allowEarlier || pointerTimerDue <= due + 0.5) return;
+        clearTimeout(pointerTimer);
+      }
       pointerTimerDue = due;
       pointerTimer = setTimeout(() => {
         pointerTimer = null;
         pointerTimerDue = 0;
-        flushPointer();
+        flushPointer(performance.now());
       }, delay);
     }
 
-    function flushPointer(now = performance.now()) {
-      if (!pointerPending) return;
+    function flushPointer(now) {
+      if (!pointerPending && !pendingLocalChat) return;
       const interval = pointerReportInterval(now);
       if (interval === Infinity) {
         cancelPendingPointer();
@@ -1239,21 +1458,55 @@ const Presence = (() => {
       const x = latestPointer.x;
       const y = latestPointer.y;
       pointerPending = false;
+      const queuedChat = pendingLocalChat;
+      pendingLocalChat = null;
       lastSent = now;
       // This runs in its own timer task, never in the pointer event or local
       // cursor's visual RAF. Anchor layout and transport serialization cannot
       // hold up the self-drawn pointer's transform update.
-      const position = anchorFor(x, y);
+      const position = anchorFor(x, y, viewportMetrics);
+      latestPointerAnchor = {
+        x,
+        y,
+        position,
+        revision: viewportMetrics.revision,
+      };
       sendCursor({ t: 'cursor', a: position.anchor, fx: position.fx, fy: position.fy });
-      if (pointerPending) schedulePointer();
+      if (queuedChat) {
+        if (
+          chatReplay &&
+          chatReplay.session === queuedChat.snapshot.session &&
+          chatReplay.seq === queuedChat.snapshot.seq
+        ) {
+          chatReplay.x = x;
+          chatReplay.y = y;
+        }
+        const remaining = queuedChat.snapshot.expiresAt
+          ? Math.max(1, queuedChat.snapshot.expiresAt - Date.now())
+          : queuedChat.ttlMs;
+        send(
+          chatWirePayload(
+            queuedChat.snapshot,
+            Math.min(queuedChat.ttlMs, remaining),
+            position
+          )
+        );
+      }
+      if (pointerPending || pendingLocalChat) {
+        schedulePointer(performance.now());
+      }
     }
 
     function reportPointer(x, y) {
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-      latestPointer.x = Math.max(0, Math.min(innerWidth, x));
-      latestPointer.y = Math.max(0, Math.min(innerHeight, y));
+      latestPointer.x = Math.max(0, Math.min(viewportMetrics.width, x));
+      latestPointer.y = Math.max(0, Math.min(viewportMetrics.height, y));
       pointerPending = true;
-      schedulePointer();
+      // A high-polling-rate mouse can produce several events per display
+      // frame. Once a trailing timer exists, only the latest coordinates
+      // change — no repeated clock reads, interval math, or timer churn.
+      if (pointerTimer !== null) return;
+      schedulePointer(performance.now());
     }
 
     addEventListener(
@@ -1265,6 +1518,8 @@ const Presence = (() => {
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) return;
       cancelPendingPointer();
+      chatReplay = null;
+      chatTrackingUntil = 0;
       send({ t: 'idle' });
     });
 
@@ -1272,6 +1527,8 @@ const Presence = (() => {
     // actually leaves the window.
     document.documentElement.addEventListener('mouseleave', () => {
       cancelPendingPointer();
+      chatReplay = null;
+      chatTrackingUntil = 0;
       send({ t: 'idle' });
     });
 
@@ -1308,8 +1565,12 @@ const Presence = (() => {
         }
         const safeText = normalizeChatText(text);
         const point = {
-          x: Number.isFinite(x) ? Math.max(0, Math.min(innerWidth, x)) : latestPointer.x,
-          y: Number.isFinite(y) ? Math.max(0, Math.min(innerHeight, y)) : latestPointer.y,
+          x: Number.isFinite(x)
+            ? Math.max(0, Math.min(viewportMetrics.width, x))
+            : latestPointer.x,
+          y: Number.isFinite(y)
+            ? Math.max(0, Math.min(viewportMetrics.height, y))
+            : latestPointer.y,
         };
         const ttl = Math.max(1, Math.min(CHAT_TTL, Number(ttlMs) || CHAT_TTL));
         const snapshot = { session, seq, text: safeText, ...point };
@@ -1317,14 +1578,24 @@ const Presence = (() => {
         if (safeText && safeText.trim() !== '') {
           snapshot.expiresAt = Date.now() + ttl;
           chatReplay = snapshot;
-          chatTrackingUntil = performance.now() + ttl;
+          const now = performance.now();
+          chatTrackingUntil = now + ttl;
+          pendingLocalChat = { snapshot, ttlMs: ttl };
+          latestPointer.x = point.x;
+          latestPointer.y = point.y;
+          pointerPending = true;
+          // Chat raises crowded rooms to at least 10Hz. It is the only event
+          // allowed to pull an already-scheduled pointer trailing edge sooner.
+          schedulePointer(now, true);
         } else {
           snapshot.text = '';
           chatReplay = null;
           chatTrackingUntil = 0;
+          pendingLocalChat = null;
+          // Clear remains immediate/latest-wins, but uses a cached or cheap
+          // page anchor instead of synchronously hit-testing the input frame.
+          send(chatWirePayload(snapshot, ttl, cachedAnchorFor(snapshot)));
         }
-
-        send(chatWirePayload(snapshot, ttl));
       },
       pointerMove(x, y) {
         reportPointer(x, y);
