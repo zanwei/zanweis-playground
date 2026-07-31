@@ -51,6 +51,11 @@ test('Cursor Chat keeps the DOM cursor active while pointer writes stay frame-ba
     'function cursorDomRequested()',
     'function cursorDomVisible()'
   );
+  const cursorDomPolicyActive = between(
+    social,
+    'function cursorDomPolicyActive()',
+    'function cursorFollowerVisible()'
+  );
 
   assert.match(social, /CUSTOM_CURSOR_DOM_ATTR/);
   assert.match(social, /class="site-cursor"/);
@@ -69,6 +74,19 @@ test('Cursor Chat keeps the DOM cursor active while pointer writes stay frame-ba
   assert.match(trackPointer, /scheduleCursorChatRender\(\)/);
   assert.doesNotMatch(trackPointer, /\.style\.transform|positionCursorFollower\(/);
   assert.match(renderCursor, /positionCursorFollower\(\)/);
+  assert.doesNotMatch(
+    renderCursor,
+    /cursorDomHandoffPending\s*=\s*false/,
+    'a render frame cannot retire the only visible cursor plane'
+  );
+  assert.match(
+    cursorDomPolicyActive,
+    /cursorDomHandoffPending\s*&&\s*!cursorDomHandoffReady/,
+    'the first handoff move restores the native policy before retiring the DOM arrow'
+  );
+  assert.match(trackPointer, /if \(cursorDomHandoffReady\)/);
+  assert.match(trackPointer, /cursorDomHandoffPending = false/);
+  assert.match(trackPointer, /cursorDomHandoffReady = true/);
   assert.match(social, /customCursorEditableDocuments/);
   assert.match(
     cursorDomRequested,

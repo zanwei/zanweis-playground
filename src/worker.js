@@ -1106,6 +1106,10 @@ export class PresenceRoom {
     } catch {
       return;
     }
+    // JSON primitives (notably `null`) are valid JSON but not protocol
+    // messages. Reading `msg.t` from null used to throw from the Durable
+    // Object and was counted as an uncaught Worker exception.
+    if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return;
     const now = Date.now();
     const user = connection.user;
     const id = user.id;

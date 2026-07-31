@@ -42,6 +42,13 @@
     !reduceMotion.matches &&
     !prefersDataSaving();
   const VIDEO_HOVER_INTENT_MS = 150;
+  const CARD_THUMB_SUFFIX = '-card';
+
+  function cardImageUrl(url) {
+    return typeof url === 'string'
+      ? url.replace(/\.webp(\?.*)?$/, `${CARD_THUMB_SUFFIX}.webp$1`)
+      : url;
+  }
 
   const ARROW_SVG = `<svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true">
     <path d="M7 17 17 7M9 7h8v8" stroke="currentColor" stroke-width="2.2" fill="none"
@@ -214,14 +221,50 @@
     return button;
   }
 
+  const previewHydrationQueue = [];
+  let previewHydrationTimer = null;
+
+  function pumpPreviewHydrationQueue() {
+    previewHydrationTimer = null;
+    const next = previewHydrationQueue.shift();
+    if (!next) return;
+    next.frame.src = demoUrl(next.item.demo);
+    if (previewHydrationQueue.length) {
+      previewHydrationTimer = setTimeout(pumpPreviewHydrationQueue, 150);
+    }
+  }
+
+  function queuePreviewHydration(entry) {
+    if (entry.frame.dataset.hydrationQueued) return;
+    entry.frame.dataset.hydrationQueued = 'true';
+    previewHydrationQueue.push(entry);
+    if (previewHydrationTimer === null) pumpPreviewHydrationQueue();
+  }
+
   function hydratePreviews() {
     if (hydratePreviews.done) return;
     hydratePreviews.done = true;
-    previewFrames.forEach(({ frame, item }, i) => {
-      setTimeout(() => {
-        frame.src = demoUrl(item.demo);
-      }, i * 150); // spread post-reveal parses so they never share one frame
-    });
+    if (!('IntersectionObserver' in window)) {
+      previewFrames.forEach(queuePreviewHydration);
+      return;
+    }
+
+    // A preview is decorative until its card approaches the viewport.
+    // Deferring offscreen documents avoids parsing eight component demos in
+    // the boot window while still having the next cards ready before scroll.
+    const rootMargin = prefersDataSaving() ? '0px' : '800px 0px';
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          observer.unobserve(entry.target);
+          const preview = previewFrames.find(({ frame }) => frame === entry.target);
+          if (preview) queuePreviewHydration(preview);
+        }
+      },
+      { rootMargin }
+    );
+    previewFrames.forEach(({ frame }) => observer.observe(frame));
   }
   addEventListener('boot:done', hydratePreviews, { once: true });
   setTimeout(hydratePreviews, 6500); // failsafe: boot.js never signalling
@@ -236,19 +279,33 @@
     };
   }
 
-  // Card-click sound. Decode the tiny asset before the first interaction so
-  // the first card gets the same low-latency response as every later card.
-  // HTMLAudio stays as a compatibility fallback when Web Audio is unavailable.
+  // Card-click sound. The source asset decodes in the background, while a
+  // tiny synchronous Web Audio buffer covers a click that happens before the
+  // network/decode path has finished. HTMLAudio is created only when Web
+  // Audio is unavailable, avoiding the former duplicate range request.
   const CLICK_SOUND_URL = 'assets/click.m4a'; // AAC: 9.6KB vs the 192KB wav
-  const clickSound = new Audio(CLICK_SOUND_URL);
-  clickSound.preload = 'auto';
-  clickSound.volume = 0.5;
-  clickSound.load();
 
   const AudioContextClass = window.AudioContext || window.webkitAudioContext;
   let clickAudioContext = null;
   let clickAudioGain = null;
   let clickAudioBuffer = null;
+  let instantClickBuffer = null;
+  let clickSound = null;
+
+  function createInstantClickBuffer(context) {
+    const duration = 0.028;
+    const frameCount = Math.max(1, Math.round(context.sampleRate * duration));
+    const buffer = context.createBuffer(1, frameCount, context.sampleRate);
+    const channel = buffer.getChannelData(0);
+    for (let i = 0; i < frameCount; i++) {
+      const progress = i / frameCount;
+      const envelope = (1 - progress) ** 5;
+      channel[i] =
+        (Math.sin(i * 0.72) * 0.7 + Math.sin(i * 0.19) * 0.3) *
+        envelope;
+    }
+    return buffer;
+  }
 
   if (AudioContextClass) {
     try {
@@ -256,6 +313,7 @@
       clickAudioGain = clickAudioContext.createGain();
       clickAudioGain.gain.value = 0.5;
       clickAudioGain.connect(clickAudioContext.destination);
+      instantClickBuffer = createInstantClickBuffer(clickAudioContext);
       fetch(CLICK_SOUND_URL)
         .then((response) => {
           if (!response.ok) throw new Error(`Click sound returned ${response.status}`);
@@ -271,6 +329,7 @@
     } catch {
       clickAudioContext = null;
       clickAudioGain = null;
+      instantClickBuffer = null;
     }
   }
 
@@ -291,6 +350,9 @@
   );
 
   function playFallbackClick() {
+    clickSound ||= new Audio(CLICK_SOUND_URL);
+    clickSound.preload = 'auto';
+    clickSound.volume = 0.5;
     clickSound.currentTime = 0;
     clickSound.play().catch(() => {
       /* autoplay policy or missing file — silence is fine */
@@ -298,10 +360,11 @@
   }
 
   function playClick() {
-    if (clickAudioContext && clickAudioGain && clickAudioBuffer) {
+    const buffer = clickAudioBuffer || instantClickBuffer;
+    if (clickAudioContext && clickAudioGain && buffer) {
       const start = () => {
         const source = clickAudioContext.createBufferSource();
-        source.buffer = clickAudioBuffer;
+        source.buffer = buffer;
         source.connect(clickAudioGain);
         source.start();
       };
@@ -322,17 +385,14 @@
     card.dataset.slug = item.slug;
     card.dataset.category = item.category;
     card.dataset.anchor = `card:${item.slug}`;
-    card.style.setProperty(
-      '--enter-delay',
-      `${Math.min(index, 8) * tokenMs('--duration-stagger', 40)}ms`
-    );
-
     if (item.type === 'figma' || item.type === 'image') {
       // Static studies stay lightweight everywhere: the card and playground
       // share one vendored image, while Source opens the original project.
       card.innerHTML = `
         <div class="card-media" style="aspect-ratio: ${item.aspect}; background: ${item.bg}">
-          <img class="static-thumb" src="${item.thumb}" alt="" loading="lazy" />
+          <img class="static-thumb" src="${cardImageUrl(item.thumb)}" alt=""
+            loading="${index < 2 ? 'eager' : 'lazy'}" decoding="async"
+            ${index === 0 ? 'fetchpriority="high"' : ''} />
           <button class="card-hit" aria-label="Open ${item.title} playground"></button>
           <div class="card-visitors"></div>
           <span class="card-label">${item.title}</span>
@@ -342,7 +402,7 @@
       card.innerHTML = `
         <div class="card-media card-media-video"
           style="aspect-ratio: ${item.aspect}; background: ${item.bg}">
-          <video class="video-thumb" poster="${item.poster}"
+          <video class="video-thumb" poster="${cardImageUrl(item.poster)}"
             preload="none" muted playsinline aria-hidden="true"></video>
           <button class="card-hit" aria-label="Open ${item.title} playground"></button>
           <div class="card-visitors"></div>
@@ -473,7 +533,17 @@
     }
   }
 
-  CATALOG.forEach((item, i) => masonry.appendChild(buildCard(item, i)));
+  // Read the motion token once and assemble every card off-DOM. Previously
+  // appending one card and then reading computed style for the next forced a
+  // layout flush per card on throttled mobile CPUs.
+  const cardStaggerMs = tokenMs('--duration-stagger', 40);
+  const cardFragment = document.createDocumentFragment();
+  CATALOG.forEach((item, i) => {
+    const card = buildCard(item, i);
+    card.style.setProperty('--enter-delay', `${Math.min(i, 8) * cardStaggerMs}ms`);
+    cardFragment.appendChild(card);
+  });
+  masonry.appendChild(cardFragment);
 
   // ---------------------------------------------------------- playground
 
