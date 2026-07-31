@@ -33,6 +33,7 @@
   --border: rgba(17, 17, 20, 0.08);
   --surface: #f4f4f5;
   --accent: #f5560c;
+  --accent-readable: #c84400;
 
   /* presence palette — functional, one hue per visitor */
   --presence-orange: #f5560c;
@@ -1593,7 +1594,7 @@ html.revealing .chat-dock {
 
 /* Your own messages use the same unmistakable live color as Online. */
 .bullet.is-own {
-  background: var(--accent);
+  background: var(--accent-readable);
   color: #fff;
 }
 
@@ -1864,7 +1865,7 @@ html.revealing .chat-dock {
 }
 
 .bullet-mode[aria-pressed='true'] {
-  background: var(--accent);
+  background: var(--accent-readable);
   color: #fff;
 }
 
@@ -1971,7 +1972,7 @@ html.revealing .chat-dock {
   }
 
   .bullet-mode[aria-pressed='true']:hover {
-    background: var(--accent);
+    background: var(--accent-readable);
     color: #fff;
   }
 }
@@ -2003,9 +2004,21 @@ html.revealing .chat-dock {
   }
 
   .chat-dock.is-visual-viewport {
-    top: var(--composer-viewport-bottom);
-    bottom: auto;
-    translate: 0 calc(-100% - 28px - env(safe-area-inset-bottom));
+    top: auto;
+    bottom: calc(
+      var(--composer-viewport-inset-bottom, 0px) +
+      28px +
+      env(safe-area-inset-bottom)
+    );
+    translate: 0 0;
+  }
+
+  /* WebKit can intermittently stop painting an input caret inside a
+     transformed fixed ancestor. Once the dock has landed the transform is
+     visually the identity, so remove that compositing boundary while typing. */
+  .chat-dock.is-on:focus-within {
+    transition: opacity 180ms var(--ease-out);
+    transform: none;
   }
 
   .chat-bar input {

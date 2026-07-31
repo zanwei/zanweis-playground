@@ -844,7 +844,7 @@ const Social = (() => {
   function resetComposerViewportPosition() {
     if (!barEl) return;
     barEl.classList.remove('is-visual-viewport');
-    barEl.style.removeProperty('--composer-viewport-bottom');
+    barEl.style.removeProperty('--composer-viewport-inset-bottom');
   }
 
   function applyComposerViewportPosition() {
@@ -864,7 +864,12 @@ const Social = (() => {
       : 0;
     const visualTop = Math.max(0, viewport.offsetTop, pageOffsetTop);
     const visualBottom = visualTop + viewport.height;
-    barEl.style.setProperty('--composer-viewport-bottom', `${Math.round(visualBottom)}px`);
+    const layoutHeight = document.documentElement.clientHeight || innerHeight;
+    const insetBottom = Math.max(0, layoutHeight - visualBottom);
+    barEl.style.setProperty(
+      '--composer-viewport-inset-bottom',
+      `${Math.round(insetBottom)}px`
+    );
     barEl.classList.add('is-visual-viewport');
   }
 
@@ -1283,6 +1288,15 @@ const Social = (() => {
     );
   }
 
+  function cursorDomPolicyActive() {
+    return (
+      finePointer.matches &&
+      cursorPointValid &&
+      (cursorDomRequested() ||
+        (cursorDomHandoffPending && !cursorDomHandoffReady))
+    );
+  }
+
   function cursorFollowerVisible() {
     return (
       finePointer.matches &&
@@ -1638,7 +1652,11 @@ const Social = (() => {
 
   function syncCustomCursor(frame = null) {
     const policyActive = finePointer.matches;
-    const domFollower = cursorDomVisible();
+    // During handoff the first real pointer event aligns the DOM arrow and
+    // restores the native CSS cursor. Keep the aligned DOM arrow for one more
+    // pointer event so macOS never has a frame where both cursor planes are
+    // absent after leaving a text field.
+    const domFollower = cursorDomPolicyActive();
     if (!customCursorRootStyled) {
       document.documentElement.style.setProperty(
         '--site-custom-cursor',
@@ -1676,7 +1694,7 @@ const Social = (() => {
         setCustomCursorPolicyMode(
           policy,
           policyActive,
-          cursorDomVisible()
+          cursorDomPolicyActive()
         );
       } catch {
         /* cross-origin frames keep their own cursor policy */
@@ -1892,16 +1910,6 @@ const Social = (() => {
     }
     positionCursorFollower();
     if (cursorChatOpen) positionCursorChat();
-    if (
-      cursorDomHandoffPending &&
-      cursorDomHandoffReady &&
-      !cursorDomRequested()
-    ) {
-      cursorDomHandoffPending = false;
-      cursorDomHandoffReady = false;
-      syncCursorChatVisibility();
-      syncCustomCursor();
-    }
   }
 
   function renderCursorChatNow() {
@@ -2085,7 +2093,18 @@ const Social = (() => {
     // way, high-polling events collapse into one transform write per frame.
     if (cursorFollowerVisible()) {
       if (cursorDomHandoffPending && !cursorDomRequested()) {
-        cursorDomHandoffReady = true;
+        if (cursorDomHandoffReady) {
+          // The native cursor was already active when this second movement
+          // began, so the DOM plane can now retire without a visual gap.
+          cursorDomHandoffPending = false;
+          cursorDomHandoffReady = false;
+          syncCursorChatVisibility();
+        } else {
+          // Align first, then restore the native cursor policy while the DOM
+          // arrow remains visible at exactly the same point.
+          cursorDomHandoffReady = true;
+        }
+        syncCustomCursor();
       }
       if (!wasFollowerVisible) {
         syncCursorChatVisibility();

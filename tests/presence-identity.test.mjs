@@ -852,6 +852,24 @@ async function importPresenceRoom() {
   return PresenceRoom;
 }
 
+test('Durable Object ignores valid JSON primitives instead of throwing', async () => {
+  const PresenceRoom = await importPresenceRoom();
+  const socket = new FakeSocket(
+    'stable_private_user_primitive',
+    'p.10101010-1010-4010-8010-101010101010'
+  );
+  const room = new PresenceRoom(durableState([socket]));
+  const before = structuredClone(socket.attachment);
+
+  for (const raw of ['null', 'true', '42', '"cursor"', '[]']) {
+    await assert.doesNotReject(room.webSocketMessage(socket, raw));
+  }
+
+  assert.deepEqual(socket.attachment, before);
+  assert.equal(room.pendingCursors.size, 0);
+  assert.equal(room.pendingChats.size, 0);
+});
+
 test('Durable Object restores unique users and a late close cannot delete a new generation', async () => {
   const PresenceRoom = await importPresenceRoom();
 
