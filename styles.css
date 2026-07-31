@@ -33,7 +33,6 @@
   --border: rgba(17, 17, 20, 0.08);
   --surface: #f4f4f5;
   --accent: #f5560c;
-  --accent-readable: #c84400;
 
   /* presence palette — functional, one hue per visitor */
   --presence-orange: #f5560c;
@@ -1594,7 +1593,7 @@ html.revealing .chat-dock {
 
 /* Your own messages use the same unmistakable live color as Online. */
 .bullet.is-own {
-  background: var(--accent-readable);
+  background: var(--accent);
   color: #fff;
 }
 
@@ -1865,7 +1864,7 @@ html.revealing .chat-dock {
 }
 
 .bullet-mode[aria-pressed='true'] {
-  background: var(--accent-readable);
+  background: var(--accent);
   color: #fff;
 }
 
@@ -1972,7 +1971,7 @@ html.revealing .chat-dock {
   }
 
   .bullet-mode[aria-pressed='true']:hover {
-    background: var(--accent-readable);
+    background: var(--accent);
     color: #fff;
   }
 }
