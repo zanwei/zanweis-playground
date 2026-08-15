@@ -4,17 +4,17 @@
  * and a rigid zero-gap filmstrip (translateX). Both animated layers share
  * one timeline and one easing curve. Layout math lives in geometry.js.
  */
-import { computeFits, clipOf, stripXOf } from './geometry.js';
+import { computeFits, stripBounds, clipOf, stripXOf } from './geometry.js';
 
-const NAV_MS = 550;
-const NAV_EASE = 'cubic-bezier(0.4, 0, 0, 1)';   // soft start + long deceleration tail
-const RETARGET_MS = 400;
+const NAV_MS = 700;
+const NAV_EASE = 'cubic-bezier(0.5, 0, 0, 1)';   // soft start + long deceleration tail
+const RETARGET_MS = 500;
 const RETARGET_EASE = 'cubic-bezier(0.05, 0.7, 0.1, 1)'; // non-zero initial slope: picks up current velocity
 const OPEN_MS = 220;
 const OPEN_EASE = 'cubic-bezier(0.16, 1, 0.3, 1)';
 const CLOSE_MS = 160;
 const FADE_MS = 150;                              // reduced-motion fade-through total
-const MARGIN = 48;                                // safe distance between image and stage edges
+const GUTTER = 92;                                // side gutters reserved for chrome; slides run the full stage height
 const FALLBACK_W = 1200, FALLBACK_H = 900;        // placeholder box for images that failed to load
 
 export class Lightbox {
@@ -84,7 +84,8 @@ export class Lightbox {
 
   layout() {
     this.W = this.stage.clientWidth; this.H = this.stage.clientHeight;
-    this.fits = computeFits(this.items, this.W, this.H, MARGIN);
+    this.fits = computeFits(this.items, this.W, this.H, GUTTER);
+    this.bounds = stripBounds(this.fits, this.H);
     this.items.forEach(({ img }, i) => {
       const f = this.fits[i];
       img.style.cssText = `left:${f.off}px;top:${f.y}px;width:${f.w}px;height:${f.h}px`;
@@ -96,7 +97,7 @@ export class Lightbox {
   /* Rest instantly, no animation: open, resize, animation cleanup, reduced motion. */
   settle(i) {
     this.cancelAnims();
-    this.frame.style.clipPath = clipOf(this.fits[i], this.W, this.H);
+    this.frame.style.clipPath = clipOf(this.fits[i], this.W, this.bounds);
     this.strip.style.transform = `translateX(${stripXOf(this.fits[i])}px)`;
   }
 
@@ -119,7 +120,7 @@ export class Lightbox {
       ? { duration: RETARGET_MS, easing: RETARGET_EASE, fill: 'forwards' }
       : { duration: NAV_MS, easing: NAV_EASE, fill: 'forwards' };
     this.anims = [
-      this.frame.animate({ clipPath: [fromClip, clipOf(this.fits[j], this.W, this.H)] }, timing),
+      this.frame.animate({ clipPath: [fromClip, clipOf(this.fits[j], this.W, this.bounds)] }, timing),
       this.strip.animate({ transform: [fromX, `translateX(${stripXOf(this.fits[j])}px)`] }, timing),
     ];
     Promise.all(this.anims.map((a) => a.finished))

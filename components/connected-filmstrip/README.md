@@ -4,7 +4,7 @@ https://github.com/user-attachments/assets/c195170c-3275-4673-8e75-bef6bff4ecb6
 
 A connected-filmstrip image lightbox as a zero-dependency ES module.
 
-Images are laid out edge to edge as one rigid strip. Navigating slides the strip while a clip window morphs between the fitted rects of the outgoing and incoming image — both layers driven by a single progress curve, so switching photos reads as one continuous surface gliding by, not two pictures swapping.
+Images are laid out edge to edge as one rigid strip. Navigating slides the strip while a clip window morphs between the fitted widths of the outgoing and incoming image — both layers driven by a single progress curve, so switching photos reads as one continuous surface gliding by, not two pictures swapping. Every slide scales to the full stage height (width capped at the stage minus the side gutters where the chrome lives); an image too wide for that letterboxes itself vertically — slides stay flat peers on a single plane, and a taller image is never cropped by a shorter neighbour mid-flight.
 
 ## Demo
 
@@ -44,8 +44,8 @@ The demo opens straight into the preview. Navigate with the on-screen arrows or 
 
 | Moment | Timing |
 | --- | --- |
-| Navigation | 550 ms · `cubic-bezier(0.4, 0, 0, 1)` — soft start, long deceleration tail |
-| Mid-flight retarget | 400 ms · `cubic-bezier(0.05, 0.7, 0.1, 1)` — non-zero initial slope picks up the current velocity |
+| Navigation | 700 ms · `cubic-bezier(0.5, 0, 0, 1)` — soft start, long deceleration tail |
+| Mid-flight retarget | 500 ms · `cubic-bezier(0.05, 0.7, 0.1, 1)` — non-zero initial slope picks up the current velocity |
 | Open / close | 220 ms scale + fade in, 160 ms fade out (asymmetric on purpose) |
 | Reduced motion | 150 ms two-phase fade-through, no translation |
 
