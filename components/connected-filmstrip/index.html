@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Connected Filmstrip</title>
+  <!-- ES modules cannot load over file:// — serve over HTTP: python3 -m http.server 8000 -->
+  <link rel="stylesheet" href="lightbox.css" />
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; min-height: 100vh; background: #111113; }
+    /* Way back in after closing the stage — the demo has no page content of its own. */
+    .reopen {
+      position: fixed;
+      inset: 0;
+      margin: auto;
+      width: fit-content;
+      height: fit-content;
+      padding: 10px 18px;
+      border: 0;
+      border-radius: 999px;
+      background: rgba(255 255 255 / 0.08);
+      color: rgba(255 255 255 / 0.85);
+      font: 14px/1 -apple-system, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
+      cursor: pointer;
+      transition: background 150ms ease-out;
+    }
+    .reopen:hover { background: rgba(255 255 255 / 0.18); }
+    .reopen:focus-visible { outline: 2px solid rgba(255 255 255 / 0.6); outline-offset: 2px; }
+  </style>
+</head>
+<body>
+  <button class="reopen" type="button">Open filmstrip</button>
+  <script type="module">
+    import { Lightbox } from './lightbox.js';
+    const lb = new Lightbox([
+      { src: 'assets/river.jpg', alt: 'River between mountains' },
+      { src: 'assets/canyon.jpg', alt: 'Canyon walls' },
+      { src: 'assets/waterfall.jpg', alt: 'Waterfall in a forest' },
+    ]);
+    document.querySelector('.reopen').addEventListener('click', () => lb.open(0));
+    lb.open(0);
+  </script>
+</body>
+</html>

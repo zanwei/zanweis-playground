@@ -1,0 +1,86 @@
+/* Lightbox — self-contained component styles (no demo/page styles in here). */
+.lb-stage {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: #0a0a0a;
+  outline: none;
+  font-family: -apple-system, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
+}
+
+/* Clip window: a stage-filling layer whose visible region is the clip-path.
+   Note: clip-path animates on the main thread in all major engines (transform
+   is the compositor property) — the two layers share one timeline and stay in
+   best-effort sync. */
+.lb-frame {
+  position: absolute;
+  inset: 0;
+  will-change: clip-path, transform;
+}
+
+/* Filmstrip: images laid out edge to edge, translated as one rigid unit. */
+.lb-strip {
+  position: absolute;
+  inset: 0;
+  will-change: transform;
+}
+
+.lb-slide {
+  position: absolute;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Stage chrome: fixed layer, never part of the content animation. */
+.lb-close,
+.lb-prev,
+.lb-next {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255 255 255 / 0.08);
+  color: rgba(255 255 255 / 0.85);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 150ms ease-out, opacity 200ms ease-out;
+}
+
+.lb-close { top: 20px; left: 20px; font-size: 15px; }
+.lb-prev  { left: 20px;  top: 50%; transform: translate(0, -50%); padding-bottom: 4px; }
+.lb-next  { right: 20px; top: 50%; transform: translate(0, -50%); padding-bottom: 4px; }
+
+.lb-prev:disabled,
+.lb-next:disabled { opacity: 0; pointer-events: none; }
+
+@media (hover: hover) and (pointer: fine) {
+  .lb-close:hover,
+  .lb-prev:hover:enabled,
+  .lb-next:hover:enabled { background: rgba(255 255 255 / 0.18); }
+}
+
+.lb-close:focus-visible,
+.lb-prev:focus-visible,
+.lb-next:focus-visible { outline: 2px solid rgba(255 255 255 / 0.6); outline-offset: 2px; }
+
+.lb-counter {
+  position: absolute;
+  z-index: 2;
+  bottom: 18px;
+  left: 50%;
+  transform: translate(-50%, 0);
+  margin: 0;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.08em;
+  color: rgba(255 255 255 / 0.55);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lb-close, .lb-prev, .lb-next { transition: none; }
+}

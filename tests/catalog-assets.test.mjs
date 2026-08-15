@@ -4,6 +4,7 @@ import { runInNewContext } from 'node:vm';
 import test from 'node:test';
 
 const EXPECTED_ORDER = [
+  'connected-filmstrip',
   'fontdetector-logo',
   'shoedex-sign-in',
   'ball-model-picker',

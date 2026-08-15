@@ -79,6 +79,7 @@ const SLOW_LIMIT = 256 * 1024; // unread SSE backlog before eviction
 const ROSTER_CAP = 200; // hello snapshot detail cap
 const LIKE_MIN_MS = 120; // per-peer floor; a SET never needs pointer-rate traffic
 const LIKE_CARDS = new Set([
+  'connected-filmstrip',
   'status-indicator',
   'ball-model-picker',
   'dialog',

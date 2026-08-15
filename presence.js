@@ -37,6 +37,7 @@ const Presence = (() => {
     ) || 2000) + 30;
   const COLORS = ['orange', 'violet', 'green', 'pink', 'blue', 'amber'];
   const LIKE_CARDS = new Set([
+    'connected-filmstrip',
     'status-indicator',
     'ball-model-picker',
     'dialog',

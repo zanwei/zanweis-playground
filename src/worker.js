@@ -80,6 +80,7 @@ const LIKE_MIN_MS = 120;
 const LIKE_COUNTS_KEY = 'like-counts:v1';
 const LIKE_MEMBERSHIP_PREFIX = 'like:v1:';
 const LIKE_CARDS = new Set([
+  'connected-filmstrip',
   'status-indicator',
   'ball-model-picker',
   'dialog',

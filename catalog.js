@@ -105,6 +105,16 @@ const CATALOG = [
     },
   },
   {
+    slug: 'connected-filmstrip',
+    repo: 'connected-filmstrip',
+    title: 'Connected Filmstrip',
+    category: 'surfaces',
+    bg: '#111113',
+    dark: true,
+    viewport: [960, 600],
+    aspect: '960 / 600',
+  },
+  {
     slug: 'chatgpt-model-selector',
     repo: 'chatgpt-model-selector',
     title: 'ChatGPT Model Selector',
@@ -296,6 +306,7 @@ for (const item of VIDEO_FILES) {
 // One-off editorial shuffle. This order is intentionally fixed: reloading
 // the page must not make cards jump to different positions.
 const DISPLAY_ORDER = [
+  'connected-filmstrip',
   'fontdetector-logo',
   'shoedex-sign-in',
   'ball-model-picker',
