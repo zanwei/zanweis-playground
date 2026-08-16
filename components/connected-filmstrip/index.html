@@ -34,9 +34,9 @@
   <script type="module">
     import { Lightbox } from './lightbox.js';
     const lb = new Lightbox([
-      { src: 'assets/river.jpg', alt: 'River between mountains' },
-      { src: 'assets/canyon.jpg', alt: 'Canyon walls' },
-      { src: 'assets/waterfall.jpg', alt: 'Waterfall in a forest' },
+      { src: 'https://picsum.photos/id/1015/1200/1600', alt: 'River between mountains' },
+      { src: 'https://picsum.photos/id/1016/1600/1000', alt: 'Canyon walls' },
+      { src: 'https://picsum.photos/id/1039/1200/1600', alt: 'Waterfall in a forest' },
     ]);
     document.querySelector('.reopen').addEventListener('click', () => lb.open(0));
     lb.open(0);
